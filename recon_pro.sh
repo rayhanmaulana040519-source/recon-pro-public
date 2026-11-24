@@ -3786,6 +3786,8 @@ main() {
         return 0
     fi
     menu
+}
+
 # Opt-in: sends one harmless request to a neutral endpoint through every proxy in
 # the pool, so a dead entry is found before a scan spends its budget on it.
 test_proxies() {
