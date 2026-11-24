@@ -66,6 +66,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --bot-status          tampilkan status lock & proses bot
   bash recon.sh --proxy-check         uji semua proxy, tulis <file>.good
   bash recon.sh --proxy-clean         uji lalu ganti file dengan yang hidup
+  bash recon.sh --self-test           cek sintaks semua skrip (setelah pull)
   bash recon.sh --setup               pasang semua kebutuhan
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
@@ -685,6 +686,33 @@ show_failures() {
     return 0
 }
 
+# Cheap syntax check of every script, so a bad pull is caught before a run.
+self_test() {
+    local rc=0 script err
+
+    for script in recon_pro.sh recon.sh setup.sh; do
+        [[ -f "$SCRIPT_DIR/$script" ]] || continue
+        if ! bash -n "$SCRIPT_DIR/$script" 2>/tmp/.recon_syn; then
+            err=$(head -n 2 /tmp/.recon_syn | tr '\n' ' ')
+            fail "$script: $err"
+            rc=1
+        fi
+    done
+
+    if [[ -f "$SCRIPT_DIR/recon_pro_bot.py" ]] && command -v python3 >/dev/null 2>&1; then
+        if ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' \
+            "$SCRIPT_DIR/recon_pro_bot.py" 2>/tmp/.recon_syn; then
+            err=$(tail -n 2 /tmp/.recon_syn | tr '\n' ' ')
+            fail "recon_pro_bot.py: $err"
+            rc=1
+        fi
+    fi
+
+    rm -f /tmp/.recon_syn
+    (( rc == 0 )) && ok "sintaks semua skrip ok"
+    return "$rc"
+}
+
 # ---------------------------------------------------------------- arg parsing --
 DOMAIN=""
 ACTION=""
@@ -706,6 +734,7 @@ while (( $# )); do
         --bot-status) ACTION="botstatus" ;;
         --proxy-check) ACTION="proxycheck" ;;
         --proxy-clean) ACTION="proxyclean" ;;
+        --self-test)  ACTION="selftest" ;;
         --no-setup)   NO_SETUP=1 ;;
         --report)
             ACTION="report"
@@ -788,6 +817,10 @@ case "$ACTION" in
     proxyclean)
         APPLY_GOOD=1
         proxy_check
+        exit $?
+        ;;
+    selftest)
+        self_test
         exit $?
         ;;
 esac

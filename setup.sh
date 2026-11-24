@@ -675,6 +675,34 @@ write_config() {
     return 0
 }
 
+# Cheap guard against a broken checkout: a syntax error in any script is caught
+# here instead of at the first run.
+check_syntax() {
+    local rc=0 script err
+
+    for script in recon_pro.sh recon.sh setup.sh; do
+        [[ -f "$SCRIPT_DIR/$script" ]] || continue
+        if ! bash -n "$SCRIPT_DIR/$script" 2>/tmp/.recon_syn; then
+            err=$(head -n 2 /tmp/.recon_syn | tr '\n' ' ')
+            warn "$script: $err"
+            rc=1
+        fi
+    done
+
+    if [[ -f "$SCRIPT_DIR/recon_pro_bot.py" ]] && have python3; then
+        if ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' \
+            "$SCRIPT_DIR/recon_pro_bot.py" 2>/tmp/.recon_syn; then
+            err=$(tail -n 2 /tmp/.recon_syn | tr '\n' ' ')
+            warn "recon_pro_bot.py: $err"
+            rc=1
+        fi
+    fi
+
+    rm -f /tmp/.recon_syn
+    (( rc == 0 )) && ok "sintaks skrip ok"
+    return "$rc"
+}
+
 # --------------------------------------------------------------------- main --
 detect_os
 info "Sistem: ${OS}${DISTRO:+ (${DISTRO})}  ·  folder: ${RECON_HOME}"
@@ -705,6 +733,7 @@ write_config "$WORDLIST_PATH" "$PARAM_PATH"
 
 info "Pemeriksaan offline (tanpa network) ..."
 BASH_BIN="${BASH:-bash}"
+check_syntax || warn "Ada file yang belum benar; perbaiki sebelum menjalankan scan."
 if ! "$BASH_BIN" "$SCRIPT_DIR/recon_pro.sh" -c; then
     warn "Pemeriksaan melaporkan masalah; baca output di atas."
 fi

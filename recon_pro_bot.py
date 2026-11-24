@@ -1118,7 +1118,8 @@ class ReconTelegramBot:
             self.send_chunked(chat_id, output or "No output from --failures.")
             return
 
-        if command in ("doctor", "tools"):            try:
+        if command in ("doctor", "tools"):
+            try:
                 result = subprocess.run(
                     [self.bash, str(self.script), "--check"],
                     cwd=str(self.script.parent),
