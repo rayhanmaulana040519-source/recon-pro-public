@@ -61,6 +61,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --tools               tool + toolkit Python terpasang
   bash recon.sh --telegram            atur token, chat ID & user bot, lalu tes
   bash recon.sh --notify-test         kirim ulang pesan tes ke Telegram
+  bash recon.sh --stop-bot            hentikan bot yang sedang jalan
   bash recon.sh --setup               pasang semua kebutuhan
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
@@ -435,7 +436,7 @@ set_telegram() {
         return 1
     fi
 
-    printf 'Chat ID numerik%s: ' "${current_chat:+ [$current_chat]}"
+    printf 'Chat ID numerik%s (ambil dari @userinfobot): ' "${current_chat:+ [$current_chat]}"
     read -r chat || chat=""
     chat="${chat// /}"
     if [[ -z "$chat" ]]; then
@@ -467,6 +468,36 @@ set_telegram() {
     return 0
 }
 
+# Stops the running bot by the PID it writes into its lock file. More reliable
+# than pkill/pgrep, whose pattern matching is easy to get wrong.
+stop_bot() {
+    local lock="${RECON_HOME%/}/state/bot/bot.lock"
+    local pid
+
+    pid=$(tr -dc '0-9' < "$lock" 2>/dev/null)
+    if [[ -z "$pid" ]]; then
+        fail "Tidak ada PID di ${lock}. Bot mungkin tidak pernah jalan."
+        return 1
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+        fail "PID ${pid} tidak hidup lagi (lock-nya basi). Coba jalankan bot."
+        return 1
+    fi
+
+    kill -TERM "$pid" 2>/dev/null || true
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        sleep 1
+        if ! kill -0 "$pid" 2>/dev/null; then
+            ok "Bot dihentikan (PID ${pid})."
+            return 0
+        fi
+    done
+
+    kill -KILL "$pid" 2>/dev/null && ok "Bot dihentikan paksa (PID ${pid})."
+    return 0
+}
+
 # ---------------------------------------------------------------- arg parsing --
 DOMAIN=""
 ACTION=""
@@ -484,6 +515,7 @@ while (( $# )); do
         --tools|--check|-c) ACTION="tools" ;;
         --telegram)   ACTION="telegram" ;;
         --notify-test) ACTION="notify" ;;
+        --stop-bot)   ACTION="stopbot" ;;
         --no-setup)   NO_SETUP=1 ;;
         --report)
             ACTION="report"
@@ -537,6 +569,10 @@ case "$ACTION" in
         ;;
     notify)
         telegram_test
+        exit $?
+        ;;
+    stopbot)
+        stop_bot
         exit $?
         ;;
 esac

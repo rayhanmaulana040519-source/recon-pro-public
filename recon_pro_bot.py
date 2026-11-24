@@ -175,8 +175,9 @@ class ReconTelegramBot:
                 holder = ""
             detail = " (PID {})".format(holder) if holder else ""
             raise BotError(
-                "Another Recon Pro Telegram bot process is already running{}. "
-                "Stop it first: pkill -f recon_pro_bot.py".format(detail)
+                "Another Recon Pro Telegram bot process is already running{}.\n"
+                "Stop it with: bash recon.sh --stop-bot\n"
+                "If that does not work, find it with: ps -eo pid,cmd | grep '[r]econ_pro_bot.py'".format(detail)
             )
         # Record the owner so the next start can name the process that holds it.
         try:
