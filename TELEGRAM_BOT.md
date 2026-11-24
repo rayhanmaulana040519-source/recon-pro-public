@@ -28,15 +28,20 @@ Only private chats from IDs listed in `TELEGRAM_ALLOWED_USERS` are accepted. Tar
 
 1. Create a bot with BotFather and keep its token private. Never put the token in this repository.
 2. You do not need to edit the scope file manually. Once the bot is running, add each authorized apex domain in Telegram with `/scope add example.com` and tap the confirmation button. The bot stores the approved list in `~/recon_pro/state/scope.txt` with owner-only permissions (a list left at the older `~/.recon_pro_scope.txt` path is moved there automatically). Only add assets explicitly included by the bug-bounty program; an apex covers its discovered subdomains, subject to exclusions.
-3. Set the bot token and the numeric Telegram user ID(s) allowed to operate it. Multiple IDs are comma-separated. For example, in Bash:
+3. Store the bot token and the numeric Telegram user ID(s) allowed to operate it, once, with:
 
    ```bash
-   read -rsp 'Telegram bot token: ' TELEGRAM_BOT_TOKEN; echo
-   export TELEGRAM_BOT_TOKEN
-   export TELEGRAM_ALLOWED_USERS='123456789'
+   bash recon.sh --telegram
    ```
 
-   Replace the example ID with your own numeric Telegram user ID. Do not add group IDs. The bot intentionally ignores unapproved users and group chats.
+   It asks for the token (hidden), the chat ID, and optionally the user IDs allowed
+   to control the bot, then writes them to `~/recon_pro/state/recon_pro.conf` with
+   owner-only permissions and sends a test message. The bot reads the same file, so
+   no environment variables are needed.
+
+   Environment variables still work and win over the file, if you prefer:
+   `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_USERS` (comma-separated). Do not add
+   group IDs. The bot intentionally ignores unapproved users and group chats.
 4. From the project directory, start the bot and keep it running:
 
    ```bash
@@ -83,7 +88,9 @@ Check these in order:
    (`tmux`, `screen`, or a systemd unit).
 5. **Send `/start` to the bot once.** Telegram only lets a bot message a user who
    started it.
-6. **`HTTP 409 Conflict`** means another process is polling the same token. Stop
+6. **`Another … bot process is already running (PID n)`** means an older instance
+   still holds the lock. Stop it: `pkill -f recon_pro_bot.py`, then start again.
+7. **`HTTP 409 Conflict`** means another process is polling the same token. Stop
    it and disable any webhook, then restart.
 7. **Nothing at all in the log?** The token is wrong or the process died; run the
    bot in the foreground to see the error.

@@ -668,6 +668,7 @@ write_config() {
         printf 'TELEGRAM_INSTANT_MAX|10\n'
         printf 'TELEGRAM_TOKEN|\n'
         printf 'TELEGRAM_CHAT|\n'
+        printf 'TELEGRAM_ALLOWED_USERS|\n'
     } > "$CONFIG_FILE"
     chmod 600 "$CONFIG_FILE" 2>/dev/null || true
     ok "Config awal dibuat: ${CONFIG_FILE}"

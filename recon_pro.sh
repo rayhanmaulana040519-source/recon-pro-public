@@ -145,6 +145,9 @@ TELEGRAM_CHAT_ID_DEFAULT=""
 
 TELEGRAM_TOKEN="${TELEGRAM_BOT_TOKEN:-${TELEGRAM_BOT_TOKEN_DEFAULT}}"
 TELEGRAM_CHAT="${TELEGRAM_CHAT_ID:-${TELEGRAM_CHAT_ID_DEFAULT}}"
+# Numeric Telegram user IDs allowed to drive recon_pro_bot.py. The scan script
+# never uses it, but it is preserved here so saving settings cannot drop it.
+TELEGRAM_ALLOWED_USERS=""
 ASSUME_YES=0
 CHECK_ONLY=0
 
@@ -807,6 +810,9 @@ load_config() {
             TELEGRAM_CHAT)
                 [[ "${value:-}" =~ ^-?[0-9]+$ ]] && TELEGRAM_CHAT="$value" || true
                 ;;
+            TELEGRAM_ALLOWED_USERS)
+                [[ "${value:-}" =~ ^[0-9]+(,[0-9]+)*$ ]] && TELEGRAM_ALLOWED_USERS="$value" || true
+                ;;
         esac
     done < "$CONFIG_FILE"
 }
@@ -854,6 +860,7 @@ save_config() {
         printf 'TELEGRAM_INSTANT_MAX|%s\n' "$TELEGRAM_INSTANT_MAX"
         printf 'TELEGRAM_TOKEN|%s\n' "$TELEGRAM_TOKEN"
         printf 'TELEGRAM_CHAT|%s\n' "$TELEGRAM_CHAT"
+        printf 'TELEGRAM_ALLOWED_USERS|%s\n' "$TELEGRAM_ALLOWED_USERS"
     } > "$temp_file"
     chmod 600 "$temp_file"
     if ! mv -f -- "$temp_file" "$CONFIG_FILE"; then

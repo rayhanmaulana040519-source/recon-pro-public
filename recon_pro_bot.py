@@ -58,6 +58,9 @@ def normalize_domain(value):
 
 def allowed_user_ids():
     raw = os.environ.get("TELEGRAM_ALLOWED_USERS", "")
+    if not raw.strip():
+        # Fallback: whatever `bash recon.sh --telegram` stored in the config.
+        raw = config_value("TELEGRAM_ALLOWED_USERS")
     ids = set()
     for value in raw.split(","):
         value = value.strip()
@@ -67,7 +70,9 @@ def allowed_user_ids():
             raise BotError("TELEGRAM_ALLOWED_USERS must be comma-separated numeric Telegram user IDs.")
         ids.add(int(value))
     if not ids:
-        raise BotError("Set TELEGRAM_ALLOWED_USERS to the numeric Telegram user ID(s) allowed to control scans.")
+        raise BotError(
+            "Set TELEGRAM_ALLOWED_USERS, or store it with: bash recon.sh --telegram"
+        )
     return ids
 
 
@@ -81,6 +86,29 @@ def recon_home():
     if configured:
         return Path(os.path.expanduser(configured)).resolve()
     return (Path.home() / "recon_pro").resolve()
+
+
+def config_value(key):
+    """Read ``KEY|value`` from the pipeline config in recon_home/state.
+
+    Lets the bot run without exporting anything: whatever ``recon.sh --telegram``
+    stored is reused here.
+    """
+    path = recon_home() / "state" / "recon_pro.conf"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        if "|" in line:
+            name, value = line.split("|", 1)
+        elif "=" in line:
+            name, value = line.split("=", 1)
+        else:
+            continue
+        if name.strip() == key:
+            return value.strip().strip('"')
+    return ""
 
 
 def existing_or_new(new_path, legacy_path):
@@ -103,9 +131,11 @@ def timestamp(value):
 
 class ReconTelegramBot:
     def __init__(self):
-        self.token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        self.token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or config_value("TELEGRAM_TOKEN")
         if not re.fullmatch(r"[0-9]+:[A-Za-z0-9_-]+", self.token):
-            raise BotError("Set TELEGRAM_BOT_TOKEN to the token created with BotFather.")
+            raise BotError(
+                "Set TELEGRAM_BOT_TOKEN, or store the token once with: bash recon.sh --telegram"
+            )
 
         self.users = allowed_user_ids()
         self.script = env_path("RECON_PRO_SCRIPT", Path(__file__).with_name("recon_pro.sh"))
@@ -137,7 +167,25 @@ class ReconTelegramBot:
         try:
             fcntl.flock(self.lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise BotError("Another Recon Pro Telegram bot process is already running.")
+            holder = ""
+            try:
+                self.lock_handle.seek(0)
+                holder = self.lock_handle.read().strip()
+            except OSError:
+                holder = ""
+            detail = " (PID {})".format(holder) if holder else ""
+            raise BotError(
+                "Another Recon Pro Telegram bot process is already running{}. "
+                "Stop it first: pkill -f recon_pro_bot.py".format(detail)
+            )
+        # Record the owner so the next start can name the process that holds it.
+        try:
+            self.lock_handle.seek(0)
+            self.lock_handle.truncate()
+            self.lock_handle.write(str(os.getpid()))
+            self.lock_handle.flush()
+        except OSError:
+            pass
 
     def api_call(self, method, data=None, timeout=40):
         url = API_BASE.format(self.token) + "/" + method

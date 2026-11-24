@@ -59,7 +59,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --report [domain]     detail bug dari kedua laporan
   bash recon.sh --log [domain]        log scan, ringkasan stage, error
   bash recon.sh --tools               tool + toolkit Python terpasang
-  bash recon.sh --telegram            atur token & chat ID, lalu kirim tes
+  bash recon.sh --telegram            atur token, chat ID & user bot, lalu tes
   bash recon.sh --notify-test         kirim ulang pesan tes ke Telegram
   bash recon.sh --setup               pasang semua kebutuhan
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
@@ -413,7 +413,7 @@ EOF
 
 # Interactive, quote-safe replacement for editing the config with sed.
 set_telegram() {
-    local token="" chat="" current_token current_chat
+    local token="" chat="" users="" current_token current_chat
 
     current_token=$(conf_value TELEGRAM_TOKEN || true)
     current_chat=$(conf_value TELEGRAM_CHAT || true)
@@ -448,6 +448,20 @@ set_telegram() {
 
     conf_set TELEGRAM_TOKEN "$token" || { fail "Gagal menulis config."; return 1; }
     conf_set TELEGRAM_CHAT "$chat" || { fail "Gagal menulis config."; return 1; }
+
+    # Optional: the numeric IDs allowed to drive the bot, stored in the same file
+    # so the bot needs no environment variables at all.
+    printf 'User ID Telegram yang boleh memakai bot (pisahkan koma, Enter = lewati): '
+    read -r users || users=""
+    users="${users// /}"
+    if [[ -n "$users" ]]; then
+        if [[ ! "$users" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+            fail "User ID harus angka, dipisah koma tanpa spasi."
+            return 1
+        fi
+        conf_set TELEGRAM_ALLOWED_USERS "$users" || warn "Gagal menyimpan daftar user ID."
+    fi
+
     ok "Tersimpan di ${CONFIG_FILE} (izin 600)."
     telegram_test "$token" "$chat" || true
     return 0
