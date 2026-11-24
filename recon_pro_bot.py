@@ -173,11 +173,12 @@ class ReconTelegramBot:
                 holder = self.lock_handle.read().strip()
             except OSError:
                 holder = ""
-            detail = " (PID {})".format(holder) if holder else ""
+            detail = " (PID {})".format(holder) if holder else " (PID unknown)"
             raise BotError(
                 "Another Recon Pro Telegram bot process is already running{}.\n"
+                "Lock: {}\n"
                 "Stop it with: bash recon.sh --stop-bot\n"
-                "If that does not work, find it with: ps -eo pid,cmd | grep '[r]econ_pro_bot.py'".format(detail)
+                "See what holds it: bash recon.sh --bot-status".format(detail, lock_path)
             )
         # Record the owner so the next start can name the process that holds it.
         try:

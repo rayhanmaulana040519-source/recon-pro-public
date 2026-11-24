@@ -62,6 +62,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --telegram            atur token, chat ID & user bot, lalu tes
   bash recon.sh --notify-test         kirim ulang pesan tes ke Telegram
   bash recon.sh --stop-bot            hentikan bot yang sedang jalan
+  bash recon.sh --bot-status          tampilkan status lock & proses bot
   bash recon.sh --setup               pasang semua kebutuhan
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
@@ -472,15 +473,23 @@ set_telegram() {
 # than pkill/pgrep, whose pattern matching is easy to get wrong.
 stop_bot() {
     local lock="${RECON_HOME%/}/state/bot/bot.lock"
-    local pid
+    local pid cmd
 
     pid=$(tr -dc '0-9' < "$lock" 2>/dev/null)
     if [[ -z "$pid" ]]; then
-        fail "Tidak ada PID di ${lock}. Bot mungkin tidak pernah jalan."
+        bot_status
+        fail "Lock tidak memuat PID. Kalau tidak ada bot yang jalan, hapus: rm -f ${lock}"
         return 1
     fi
     if ! kill -0 "$pid" 2>/dev/null; then
-        fail "PID ${pid} tidak hidup lagi (lock-nya basi). Coba jalankan bot."
+        fail "PID ${pid} tidak hidup (lock basi). Jalankan bot, atau hapus: rm -f ${lock}"
+        return 1
+    fi
+
+    cmd=$(ps -p "$pid" -o args= 2>/dev/null)
+    if [[ "$cmd" != *recon_pro_bot.py* ]]; then
+        fail "PID ${pid} bukan bot Recon Pro: ${cmd:-<tidak diketahui>}"
+        fail "Lock basi. Hapus: rm -f ${lock}"
         return 1
     fi
 
@@ -495,6 +504,37 @@ stop_bot() {
     done
 
     kill -KILL "$pid" 2>/dev/null && ok "Bot dihentikan paksa (PID ${pid})."
+    return 0
+}
+
+# Shows what the bot lock looks like right now, so a stuck start is explainable.
+bot_status() {
+    local lock="${RECON_HOME%/}/state/bot/bot.lock"
+    local pid cmd holder
+
+    printf '%b=== BOT STATUS ===%b\n' "${BOLD}" "$NC"
+    printf 'Lock file : %s%s\n' "$lock" "$( [[ -f "$lock" ]] && printf '' || printf '  (belum ada)' )"
+
+    pid=$(tr -dc '0-9' < "$lock" 2>/dev/null)
+    if [[ -n "$pid" ]]; then
+        printf 'PID di lock: %s\n' "$pid"
+        if kill -0 "$pid" 2>/dev/null; then
+            cmd=$(ps -p "$pid" -o args= 2>/dev/null)
+            printf 'Proses    : %s\n' "${cmd:-<tidak terbaca>}"
+        else
+            printf 'Proses    : tidak hidup (lock basi)\n'
+        fi
+    else
+        printf 'PID di lock: (kosong)\n'
+    fi
+
+    if command -v fuser >/dev/null 2>&1 && [[ -f "$lock" ]]; then
+        holder=$(fuser "$lock" 2>/dev/null | tr -s ' ' | sed 's/^ //')
+        printf 'Pemegang  : %s\n' "${holder:-tidak ada proses memegang lock}"
+    fi
+
+    holder=$(ps -eo pid,args 2>/dev/null | awk '/[r]econ_pro_bot\.py/ { print $1 }' | tr '\n' ' ')
+    printf 'Proses bot: %s\n' "${holder:-tidak ada}"
     return 0
 }
 
@@ -516,6 +556,7 @@ while (( $# )); do
         --telegram)   ACTION="telegram" ;;
         --notify-test) ACTION="notify" ;;
         --stop-bot)   ACTION="stopbot" ;;
+        --bot-status) ACTION="botstatus" ;;
         --no-setup)   NO_SETUP=1 ;;
         --report)
             ACTION="report"
@@ -574,6 +615,10 @@ case "$ACTION" in
     stopbot)
         stop_bot
         exit $?
+        ;;
+    botstatus)
+        bot_status
+        exit 0
         ;;
 esac
 

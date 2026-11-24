@@ -89,9 +89,11 @@ Check these in order:
 5. **Send `/start` to the bot once.** Telegram only lets a bot message a user who
    started it.
 6. **`Another … bot process is already running (PID n)`** means an older instance
-   still holds the lock. Stop it with `bash recon.sh --stop-bot`, or kill the PID
-   directly. To list candidates reliably: `ps -eo pid,cmd | grep '[r]econ_pro_bot'`
-   (the bracket keeps grep out of its own output).
+   still holds the lock. `bash recon.sh --stop-bot` stops the PID recorded in the
+   lock; `bash recon.sh --bot-status` shows the lock content, the process line and
+   which PID actually holds the file (`fuser`).
+   If the lock is stale and no bot is running, remove it and start again:
+   `rm -f ~/recon_pro/state/bot/bot.lock`.
 7. **`HTTP 409 Conflict`** means another process is polling the same token. Stop
    it and disable any webhook, then restart.
 7. **Nothing at all in the log?** The token is wrong or the process died; run the
