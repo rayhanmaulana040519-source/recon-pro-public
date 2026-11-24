@@ -8,3 +8,6 @@
 
 
 .archive-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.archive-controls .compact-select{max-width:260px}.log-panel .console-head{gap:12px;flex-wrap:wrap}.log-panel .archive-controls{justify-content:flex-end}.log-panel .log-content{white-space:pre;overflow:auto;max-width:100%}@media(max-width:820px){.page-heading .archive-controls{justify-content:flex-start;max-width:100%}.log-panel .archive-controls{justify-content:flex-start}}@media(max-width:560px){.archive-controls{gap:5px}.archive-controls .compact-select{min-width:118px;max-width:170px}.report-toolbar .archive-controls{justify-content:flex-start}.log-panel .console-head>div:first-child{width:100%}}
+
+
+.mobile-scope-item{display:none}@media(max-width:820px){.mobile-scope-item{display:flex}}
