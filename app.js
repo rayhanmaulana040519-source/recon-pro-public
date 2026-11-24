@@ -4,7 +4,7 @@
   const TOKEN_KEY = "reconpro-local-session";
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
-  const state = { token: "", scope: [], targets: [], reports: [], selectedReport: null, selectedLog: null, outputSeq: 0, scanId: null, timer: null, reportLoadSerial: 0, logLoadSerial: 0 };
+  const state = { token: "", scope: [], targets: [], reports: [], selectedReport: null, selectedLog: null, outputSeq: 0, scanId: null, scanRunning: false, shellSeq: 0, shellId: null, shellRunning: false, shellEnabled: false, timer: null, reportLoadSerial: 0, logLoadSerial: 0 };
   const loginScreen = $("#loginScreen");
   const appShell = $("#appShell");
   const loginError = $("#loginError");
@@ -74,10 +74,10 @@
   }
 
   function goto(page) {
-    const valid = ["overview", "scan", "reports", "logs", "tools", "scope"].includes(page) ? page : "overview";
+    const valid = ["overview", "scan", "reports", "logs", "tools", "terminal", "scope"].includes(page) ? page : "overview";
     $$(".page-view").forEach((item) => item.classList.toggle("hidden", item.dataset.view !== valid));
     $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.page === valid));
-    const names = { overview: "IKHTISAR", scan: "PEMINDAIAN", reports: "LAPORAN", logs: "LOG AKTIVITAS", tools: "INVENTARIS TOOL", scope: "SCOPE & PROXY" };
+    const names = { overview: "IKHTISAR", scan: "PEMINDAIAN", reports: "LAPORAN", logs: "LOG AKTIVITAS", tools: "INVENTARIS TOOL", terminal: "TERMINAL VPS", scope: "SCOPE & PROXY" };
     text($("#pageCrumb"), names[valid]);
     history.replaceState(null, "", `#${valid}`);
     if (valid === "scope") { loadScope(); loadProxies(); }
@@ -85,6 +85,7 @@
     if (valid === "reports") loadReports();
     if (valid === "logs") loadLogs();
     if (valid === "scan") refreshOutput();
+    if (valid === "terminal") refreshShellOutput();
   }
 
   function addOption(select, value, label, selected = false) {
@@ -132,11 +133,12 @@
 
   async function refreshAll() {
     await Promise.all([loadStatus(), loadScope(), loadTools(), loadProxies()]);
-    await refreshOutput();
+    await Promise.all([refreshOutput(), refreshShellOutput()]);
   }
 
   async function loadStatus() {
     const data = await request("/api/status");
+    state.scanRunning = !!data.scan_running;
     if (state.scanId !== null && data.scan && data.scan.id !== state.scanId) appendOutput([], true);
     if (data.scan) state.scanId = data.scan.id;
     state.targets = data.targets || [];
@@ -514,10 +516,54 @@
     } catch (_error) { /* status poll presents the connection error */ }
   }
 
+  function appendShellOutput(lines, reset = false) {
+    const output = $("#shellOutput");
+    if (reset) { output.replaceChildren(); state.shellSeq = 0; }
+    const placeholder = $(".console-placeholder", output);
+    if (placeholder && lines.length) placeholder.remove();
+    lines.forEach((item) => {
+      const line = document.createElement("span");
+      line.className = "console-line";
+      line.textContent = item.line;
+      output.appendChild(line);
+      output.appendChild(document.createTextNode("\n"));
+      state.shellSeq = Math.max(state.shellSeq, item.seq);
+    });
+    if (lines.length) output.scrollTop = output.scrollHeight;
+  }
+
+  async function refreshShellOutput() {
+    try {
+      const data = await request(`/api/shell?after=${state.shellSeq}`);
+      if (state.shellId !== data.shell.id) {
+        appendShellOutput([], true);
+        state.shellId = data.shell.id;
+      }
+      state.shellEnabled = data.enabled === true;
+      state.shellRunning = data.shell.status === "running";
+      appendShellOutput(data.lines || []);
+      $("#shellIndicator").classList.toggle("console-running", state.shellRunning);
+      $("#runShell").disabled = !state.shellEnabled || state.scanRunning || state.shellRunning;
+      $("#stopShell").disabled = !state.shellRunning;
+      if (!state.shellEnabled) text($("#shellStatus"), "Nonaktif · perlu opt-in dan bind localhost");
+      else if (state.scanRunning) text($("#shellStatus"), "Dikunci selama scan dashboard");
+      else if (state.shellRunning) text($("#shellStatus"), "Perintah berjalan di VPS");
+      else if (data.shell.status === "completed") text($("#shellStatus"), "Perintah selesai · exit 0");
+      else if (data.shell.status === "failed") text($("#shellStatus"), `Perintah gagal · exit ${data.shell.return_code ?? "?"}`);
+      else text($("#shellStatus"), "Siap · command shell aktif");
+    } catch (error) {
+      state.shellEnabled = false;
+      state.shellRunning = false;
+      $("#runShell").disabled = true;
+      $("#stopShell").disabled = true;
+      text($("#shellStatus"), error.message.includes("Endpoint tidak ditemukan") ? "Backend belum diperbarui; update dan restart dashboard" : error.message);
+    }
+  }
+
   async function refreshLive() {
     try {
       await loadStatus();
-      await refreshOutput();
+      await Promise.all([refreshOutput(), refreshShellOutput()]);
       if ($("#logTarget").value && document.querySelector('[data-view="logs"]:not(.hidden)')) await loadLogs();
     } catch (error) {
       text($("#connectionText"), "Backend terputus");
@@ -542,6 +588,40 @@
     if (!window.confirm("Hentikan scan yang sedang berjalan beserta proses tool turunannya?")) return;
     try { await request("/api/scan/stop", { method: "POST", body: "{}" }); toast("Permintaan berhenti dikirim.", "success"); }
     catch (error) { toast(error.message, "error"); }
+  }
+
+  async function startShell(event) {
+    event.preventDefault();
+    const command = $("#shellCommand").value.trim();
+    if (!command) return;
+    if (!window.confirm("Shell ini dapat menjalankan perintah dengan hak akun Linux dashboard dan melewati scope check UI. Jalankan hanya command yang Anda pahami pada target berizin. Lanjutkan?")) return;
+    $("#runShell").disabled = true;
+    try {
+      const result = await request("/api/shell/start", { method: "POST", body: JSON.stringify({ command, acknowledged: true }) });
+      state.shellId = result.shell.id;
+      state.shellSeq = 0;
+      state.shellRunning = true;
+      const output = $("#shellOutput");
+      output.replaceChildren();
+      const entered = document.createElement("span");
+      entered.className = "console-line";
+      entered.textContent = `$ ${command}`;
+      output.append(entered, document.createTextNode("\n"));
+      $("#shellCommand").value = "";
+      await refreshShellOutput();
+      toast("Command dijalankan pada VPS.", "success");
+    } catch (error) {
+      toast(error.message, "error");
+      await refreshShellOutput();
+    }
+  }
+
+  async function stopShell() {
+    if (!window.confirm("Hentikan command shell dan seluruh proses turunannya?")) return;
+    try {
+      await request("/api/shell/stop", { method: "POST", body: "{}" });
+      toast("Sinyal berhenti dikirim ke command shell.", "success");
+    } catch (error) { toast(error.message, "error"); }
   }
 
   async function saveProxies() {
@@ -582,6 +662,9 @@
     $("#cancelScan").addEventListener("click", () => $("#scanDialog").close());
     $("#stopScanSmall").addEventListener("click", stopScan);
     $("#clearConsole").addEventListener("click", () => { $("#scanOutput").replaceChildren(); const note = document.createElement("span"); note.className = "console-placeholder"; note.textContent = "Tampilan output dibersihkan; log asli tetap tersimpan di host."; $("#scanOutput").appendChild(note); });
+    $("#shellForm").addEventListener("submit", startShell);
+    $("#stopShell").addEventListener("click", stopShell);
+    $("#clearShellConsole").addEventListener("click", () => { $("#shellOutput").replaceChildren(); const note = document.createElement("span"); note.className = "console-placeholder"; note.textContent = "Tampilan terminal dibersihkan; output tersimpan sementara di sesi dashboard."; $("#shellOutput").appendChild(note); });
     $("#reportTarget").addEventListener("change", loadReports);
     $("#reportRun").addEventListener("change", () => loadReportFiles());
     $("#loadReports").addEventListener("click", loadReports);

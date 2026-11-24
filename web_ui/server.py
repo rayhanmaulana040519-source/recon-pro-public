@@ -2,8 +2,10 @@
 """Local Recon Pro dashboard for an authorized VPS or Termux host.
 
 The standard-library server binds to loopback by default. Set RECON_WEB_TOKEN to
-an operator-generated secret before starting it. It never accepts shell commands;
-scan requests are validated against the local scope and exclusion files.
+an operator-generated secret before starting it. Scan requests are validated
+against the local scope and exclusion files. An optional command runner accepts
+Bash commands only with RECON_WEB_ENABLE_SHELL=1 and a loopback bind; it runs
+with the dashboard account's privileges and is not an interactive TTY.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ TOOLKIT_REPORTS_DIR = ROOT / "bugbounty-toolkit" / "reports"
 TOKEN = os.environ.get("RECON_WEB_TOKEN", "")
 HOST = os.environ.get("RECON_WEB_HOST", "127.0.0.1").strip()
 PORT_RAW = os.environ.get("RECON_WEB_PORT", "8765")
+SHELL_ENABLED = os.environ.get("RECON_WEB_ENABLE_SHELL") == "1"
 DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 PROXY_SCHEMES = {"http", "https", "socks4", "socks5", "socks5h"}
 MAX_BODY = 32 * 1024
@@ -70,6 +73,18 @@ SCAN: dict[str, Any] = {
 }
 AUTH_LOCK = threading.Lock()
 FAILED_LOGINS: dict[str, deque[float]] = {}
+OPERATION_LOCK = threading.Lock()
+SHELL_LOCK = threading.RLock()
+SHELL: dict[str, Any] = {
+    "id": None,
+    "status": "idle",
+    "started_at": None,
+    "finished_at": None,
+    "return_code": None,
+    "output": deque(maxlen=2000),
+    "next_seq": 0,
+    "process": None,
+}
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -463,37 +478,41 @@ def _start_scan(domain: str, mode: str) -> dict[str, Any]:
     env = os.environ.copy()
     env.pop("RECON_WEB_TOKEN", None)
     env.setdefault("PYTHONUNBUFFERED", "1")
-    with SCAN_LOCK:
-        if SCAN["status"] == "running":
-            raise ValueError("Scan lain masih berjalan.")
-        process = subprocess.Popen(
-            command,
-            cwd=str(ROOT),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            start_new_session=True,
-        )
-        scan_id = secrets.token_hex(12)
-        SCAN.update({
-            "id": scan_id,
-            "target": domain,
-            "mode": mode,
-            "status": "running",
-            "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "finished_at": None,
-            "return_code": None,
-            "output": deque(maxlen=2000),
-            "next_seq": 0,
-            "process": process,
-        })
-        worker = threading.Thread(target=_scan_worker, args=(scan_id, process), daemon=True)
-        worker.start()
+    with OPERATION_LOCK:
+        with SHELL_LOCK:
+            if SHELL["status"] == "running":
+                raise ValueError("Scan dashboard tidak dapat dimulai saat command shell berjalan.")
+        with SCAN_LOCK:
+            if SCAN["status"] == "running":
+                raise ValueError("Scan lain masih berjalan.")
+            process = subprocess.Popen(
+                command,
+                cwd=str(ROOT),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                start_new_session=True,
+            )
+            scan_id = secrets.token_hex(12)
+            SCAN.update({
+                "id": scan_id,
+                "target": domain,
+                "mode": mode,
+                "status": "running",
+                "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "finished_at": None,
+                "return_code": None,
+                "output": deque(maxlen=2000),
+                "next_seq": 0,
+                "process": process,
+            })
+            worker = threading.Thread(target=_scan_worker, args=(scan_id, process), daemon=True)
+            worker.start()
     return _scan_snapshot()
 
 
@@ -756,6 +775,144 @@ def _proxy_data() -> dict[str, Any]:
     }
 
 
+def _shell_available() -> bool:
+    try:
+        loopback = HOST.lower() == "localhost" or ipaddress.ip_address(HOST).is_loopback
+    except ValueError:
+        loopback = False
+    return SHELL_ENABLED and loopback
+
+
+def _shell_snapshot() -> dict[str, Any]:
+    with SHELL_LOCK:
+        return {
+            "id": SHELL["id"],
+            "status": SHELL["status"],
+            "started_at": SHELL["started_at"],
+            "finished_at": SHELL["finished_at"],
+            "return_code": SHELL["return_code"],
+        }
+
+
+def _shell_data(after: int) -> dict[str, Any]:
+    with SHELL_LOCK:
+        lines = [line for line in SHELL["output"] if line["seq"] > after]
+        shell = {
+            "id": SHELL["id"],
+            "status": SHELL["status"],
+            "started_at": SHELL["started_at"],
+            "finished_at": SHELL["finished_at"],
+            "return_code": SHELL["return_code"],
+        }
+        return {"shell": shell, "lines": lines, "next_seq": SHELL["next_seq"], "enabled": _shell_available()}
+
+
+def _append_shell_output(shell_id: str, line: str) -> None:
+    line = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line)
+    with SHELL_LOCK:
+        if SHELL["id"] != shell_id:
+            return
+        SHELL["next_seq"] += 1
+        SHELL["output"].append({"seq": SHELL["next_seq"], "line": _redact(line[:8000])})
+
+
+def _shell_worker(shell_id: str, process: subprocess.Popen[str]) -> None:
+    buffer = ""
+    try:
+        assert process.stdout is not None
+        while True:
+            chunk = process.stdout.readline(4096)
+            if not chunk:
+                break
+            buffer += chunk
+            if buffer.endswith("\n"):
+                _append_shell_output(shell_id, buffer.rstrip("\r\n"))
+                buffer = ""
+            elif len(buffer) >= 8000:
+                _append_shell_output(shell_id, buffer[:8000] + " [baris dipotong]")
+                buffer = buffer[8000:]
+        if buffer:
+            _append_shell_output(shell_id, buffer.rstrip("\r\n"))
+        return_code = process.wait()
+    except (OSError, ValueError) as error:
+        _append_shell_output(shell_id, "Dashboard: gagal membaca output shell: {}".format(error))
+        return_code = process.poll()
+        if return_code is None:
+            return_code = 1
+    with SHELL_LOCK:
+        if SHELL["id"] == shell_id:
+            SHELL["return_code"] = return_code
+            SHELL["status"] = "completed" if return_code == 0 else "failed"
+            SHELL["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            SHELL["process"] = None
+
+
+def _start_shell(command_text: Any, acknowledged: Any) -> dict[str, Any]:
+    if not _shell_available():
+        raise ValueError("Terminal web nonaktif. Jalankan dashboard dengan RECON_WEB_ENABLE_SHELL=1 dan bind 127.0.0.1.")
+    if acknowledged is not True:
+        raise ValueError("Konfirmasi risiko shell wajib diberikan.")
+    if not isinstance(command_text, str) or not command_text.strip():
+        raise ValueError("Masukkan perintah shell.")
+    command_text = command_text.strip()
+    if len(command_text) > 4096 or "\x00" in command_text:
+        raise ValueError("Perintah terlalu panjang atau mengandung karakter yang tidak valid.")
+    env = os.environ.copy()
+    env.pop("RECON_WEB_TOKEN", None)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GCM_INTERACTIVE"] = "Never"
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    with OPERATION_LOCK:
+        with SCAN_LOCK:
+            if SCAN["status"] == "running":
+                raise ValueError("Command shell tidak dapat dimulai saat scan dashboard aktif.")
+        with SHELL_LOCK:
+            if SHELL["status"] == "running":
+                raise ValueError("Selesaikan atau hentikan command shell yang sedang berjalan dahulu.")
+            process = subprocess.Popen(
+                ["bash", "-c", command_text],
+                cwd=str(ROOT),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                start_new_session=True,
+            )
+            shell_id = secrets.token_hex(12)
+            SHELL.update({
+                "id": shell_id,
+                "status": "running",
+                "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "finished_at": None,
+                "return_code": None,
+                "output": deque(maxlen=2000),
+                "next_seq": 0,
+                "process": process,
+            })
+            worker = threading.Thread(target=_shell_worker, args=(shell_id, process), daemon=True)
+            worker.start()
+    return _shell_snapshot()
+
+
+def _stop_shell() -> dict[str, Any]:
+    with SHELL_LOCK:
+        process = SHELL.get("process")
+        if SHELL["status"] != "running" or process is None:
+            raise ValueError("Tidak ada command shell yang sedang berjalan.")
+        pid = process.pid
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError as error:
+        raise ValueError("Sinyal berhenti gagal dikirim: {}".format(error)) from error
+    return _shell_snapshot()
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "ReconProLocal/1.0"
@@ -895,6 +1052,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 with SCAN_LOCK:
                     lines = [line for line in SCAN["output"] if line["seq"] > after]
                     payload = {"scan_id": SCAN["id"], "lines": lines, "next_seq": SCAN["next_seq"]}
+            elif path == "/api/shell":
+                after = int(query.get("after", ["0"])[0])
+                payload = _shell_data(after)
             elif path in ("/api/runs", "/api/files", "/api/file", "/api/download"):
                 target = _normalize_domain(query.get("target", [""])[0])
                 if not target:
@@ -975,6 +1135,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 payload_out = {"scan": _start_scan(domain, str(payload.get("mode", "full")))}
             elif path == "/api/scan/stop":
                 payload_out = {"scan": _stop_scan()}
+            elif path == "/api/shell/start":
+                payload_out = {"shell": _start_shell(payload.get("command"), payload.get("acknowledged"))}
+            elif path == "/api/shell/stop":
+                payload_out = {"shell": _stop_shell()}
             elif path == "/api/scope":
                 domain = _normalize_domain(payload.get("domain"))
                 if not domain:
@@ -1008,6 +1172,9 @@ def main() -> int:
         is_loopback = HOST.lower() == "localhost" or ipaddress.ip_address(HOST).is_loopback
     except ValueError:
         is_loopback = False
+    if SHELL_ENABLED and not is_loopback:
+        print("ERROR: terminal web memerlukan RECON_WEB_HOST loopback (127.0.0.1); jangan expose shell ke jaringan.", file=sys.stderr)
+        return 2
     if not is_loopback:
         if os.environ.get("RECON_WEB_ALLOW_REMOTE") != "1":
             print("ERROR: bind non-local memerlukan RECON_WEB_ALLOW_REMOTE=1.", file=sys.stderr)
@@ -1027,6 +1194,8 @@ def main() -> int:
     server.daemon_threads = True
     print("Recon Pro dashboard berjalan di http://{}:{}".format(HOST, port))
     print("Hentikan dengan Ctrl-C. Scan hanya berjalan pada mesin ini.")
+    if SHELL_ENABLED:
+        print("PERINGATAN: terminal web aktif; akses shell hanya lewat loopback dan token dashboard.")
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
@@ -1037,6 +1206,13 @@ def main() -> int:
         if process is not None and process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                pass
+        with SHELL_LOCK:
+            shell_process = SHELL.get("process")
+        if shell_process is not None and shell_process.poll() is None:
+            try:
+                os.killpg(shell_process.pid, signal.SIGTERM)
             except OSError:
                 pass
         server.server_close()
