@@ -30,7 +30,7 @@
     try {
       response = await fetch(path, { ...options, headers, cache: "no-store", credentials: "omit" });
     } catch (_error) {
-      throw new Error("Backend lokal tidak merespons. Pastikan web_ui/server.py masih berjalan pada mesin Recon Pro.");
+      throw new Error("Backend lokal tidak merespons. Pastikan web_ui/server.py masih berjalan pada mesin R3YN0D3.");
     }
     let payload = {};
     try { payload = await response.json(); } catch (_error) { /* handled below */ }

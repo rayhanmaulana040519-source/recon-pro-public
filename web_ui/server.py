@@ -357,6 +357,8 @@ def _tool_inventory() -> list[dict[str, Any]]:
         ("findomain", "Subdomain discovery"), ("chaos", "Subdomain discovery"),
         ("dnsx", "DNS validation"), ("httpx", "HTTP probing"), ("tlsx", "TLS inventory"),
         ("nuclei", "Template checks"), ("dalfox", "Parameter checks"), ("whatweb", "Technology detection"),
+        ("sqlmap", "Authorized SQL injection testing"), ("wafw00f", "WAF identification"),
+        ("nikto", "Authorized web server checks"),
         ("katana", "URL collection"), ("waybackurls", "URL collection"), ("gau", "URL collection"),
         ("x8", "Parameter discovery"), ("ffuf", "Content discovery"), ("gf", "Pattern filtering"),
         ("naabu", "Port discovery"), ("nmap", "Port inventory"), ("python3", "Passive toolkit / dashboard"),

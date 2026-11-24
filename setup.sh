@@ -40,6 +40,7 @@ DO_GO=1
 DO_X8=0
 DO_TEMPLATES=1
 DO_PYTHON=1
+DO_WEB_AUDIT=0
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RED='\033[0;31m'; NC='\033[0m'
 
@@ -58,6 +59,8 @@ recon_pro setup — pasang semua yang dibutuhkan lalu cek hasilnya
   bash setup.sh --no-go         lewati pemasangan tool Go
   bash setup.sh --no-templates  lewati unduh template nuclei
   bash setup.sh --with-x8       sekalian pasang x8 lewat cargo (lama)
+  bash setup.sh --with-web-audit pasang sqlmap, wafw00f, whatweb, nikto
+  bash setup.sh --web-audit-only hanya pasang paket audit web opsional
   bash setup.sh --no-python     lewati toolkit Python pasif
   bash setup.sh --python-only   hanya siapkan toolkit Python
 
@@ -71,6 +74,15 @@ while (( $# )); do
         --no-packages) DO_PACKAGES=0 ;;
         --no-go)       DO_GO=0 ;;
         --with-x8)     DO_X8=1 ;;
+        --with-web-audit) DO_WEB_AUDIT=1 ;;
+        --web-audit-only)
+            DO_WEB_AUDIT=1
+            DO_PACKAGES=0
+            DO_GO=0
+            DO_TEMPLATES=0
+            DO_X8=0
+            DO_PYTHON=0
+            ;;
         --no-templates) DO_TEMPLATES=0 ;;
         --no-python)   DO_PYTHON=0 ;;
         --python-only)
@@ -285,7 +297,62 @@ install_go_tools() {
     return 0
 }
 
+install_web_audit_tools() {
+    if (( ! DO_WEB_AUDIT )); then
+        return 0
+    fi
+
+    local pkg
+    local -a packages=(sqlmap wafw00f whatweb nikto)
+    case "$OS:$DISTRO" in
+        linux:ubuntu|linux:debian|linux:linuxmint|linux:pop|linux:elementary|linux:kali)
+            info "Memasang tool audit web resmi lewat apt ..."
+            run_root env DEBIAN_FRONTEND=noninteractive apt-get update -y >>"$LOG_FILE" 2>&1 || warn "apt-get update gagal; mencoba paket yang tersedia."
+            for pkg in "${packages[@]}"; do
+                if have "$pkg"; then
+                    ok "$pkg"
+                elif run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" >>"$LOG_FILE" 2>&1; then
+                    ok "$pkg"
+                else
+                    warn "$pkg gagal dipasang; lihat ${LOG_FILE}"
+                fi
+            done
+            ;;
+        linux:arch|linux:manjaro|linux:endeavouros)
+            for pkg in "${packages[@]}"; do
+                if have "$pkg"; then
+                    ok "$pkg"
+                elif run_root pacman -S --needed --noconfirm "$pkg" >>"$LOG_FILE" 2>&1; then
+                    ok "$pkg"
+                else
+                    warn "$pkg gagal dipasang; lihat ${LOG_FILE}"
+                fi
+            done
+            ;;
+        mac:*)
+            if ! have brew; then
+                warn "Homebrew tidak ada; paket audit web dilewati."
+                return 0
+            fi
+            for pkg in "${packages[@]}"; do
+                if have "$pkg"; then
+                    ok "$pkg"
+                elif brew install "$pkg" >>"$LOG_FILE" 2>&1; then
+                    ok "$pkg"
+                else
+                    warn "$pkg gagal dipasang; lihat ${LOG_FILE}"
+                fi
+            done
+            ;;
+        *)
+            warn "Paket audit web otomatis belum didukung untuk ${OS}/${DISTRO:-unknown}; pasang dari repositori resmi distro."
+            ;;
+    esac
+    return 0
+}
+
 install_optional_extras() {
+    install_web_audit_tools
     if (( ! DO_X8 )); then
         return 0
     fi

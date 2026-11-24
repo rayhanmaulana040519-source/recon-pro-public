@@ -52,8 +52,20 @@ Setup terpisah, kalau diperlukan:
 ```bash
 bash setup.sh --minimal              # tool inti saja (lebih cepat)
 bash setup.sh --with-x8              # sekalian pasang x8 (cargo, lama)
+bash setup.sh --web-audit-only       # sqlmap, wafw00f, whatweb, nikto saja
+bash setup.sh --with-web-audit       # tambahkan tool audit web ke setup biasa
 bash setup.sh --python-only          # hanya venv + dependensi toolkit Python
 bash setup.sh --no-python            # tanpa toolkit Python
+```
+
+### Paket audit web opsional
+
+Paket ini berisi SQLMap (uji SQL injection), WAFW00F (identifikasi WAF), WhatWeb (fingerprinting teknologi), dan Nikto (pemeriksaan web server). Paket hanya dipasang bila opsi di atas dipilih; Recon Pro tidak menjalankan SQLMap atau Nikto otomatis. Gunakan hanya pada aset yang tercantum in-scope dan dengan izin tertulis. Jangan gunakan opsi SQLMap untuk dump database, shell, atau mengubah data.
+
+Contoh uji terbatas pada parameter yang diizinkan:
+
+```bash
+sqlmap -u 'https://in-scope.example/item?id=1' --batch --risk=1 --level=1 --technique=BE --threads=1 --timeout=10 --retries=1
 ```
 
 Hasil:
