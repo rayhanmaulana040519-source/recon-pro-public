@@ -63,6 +63,8 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --notify-test         kirim ulang pesan tes ke Telegram
   bash recon.sh --stop-bot            hentikan bot yang sedang jalan
   bash recon.sh --bot-status          tampilkan status lock & proses bot
+  bash recon.sh --proxy-check         uji semua proxy, tulis <file>.good
+  bash recon.sh --proxy-clean         uji lalu ganti file dengan yang hidup
   bash recon.sh --setup               pasang semua kebutuhan
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
@@ -538,6 +540,90 @@ bot_status() {
     return 0
 }
 
+# Tests every proxy in PROXY_FILE and keeps the ones that answer.
+# APPLY_GOOD=1 replaces the file with the working entries instead of writing
+# <file>.good next to it.
+proxy_check() {
+    local file tmp goodtmp total good proxy batch p ip
+
+    APPLY_GOOD=${APPLY_GOOD:-0}
+
+    file=$(conf_value PROXY_FILE || true)
+    [[ -n "$file" ]] || file="state/proxies.txt"
+    [[ "$file" = /* ]] || file="${RECON_HOME%/}/${file}"
+
+    if [[ ! -f "$file" ]]; then
+        fail "File proxy tidak ada: ${file} (jalankan bash setup.sh atau buat sendiri)."
+        return 1
+    fi
+
+    tmp=$(mktemp) || return 1
+    goodtmp=$(mktemp) || { rm -f "$tmp"; return 1; }
+
+    # Strip comments/blank lines and give a bare host:port an http:// scheme,
+    # the same normalisation load_proxies() applies.
+    awk '
+        /^[[:space:]]*(#|$)/ { next }
+        {
+            gsub(/[[:space:]]/, "")
+            p = $0
+            if (p !~ /:\/\//) p = "http://" p
+            print p
+        }
+    ' "$file" > "$tmp"
+
+    total=$(awk 'END { print NR }' "$tmp")
+    total=${total:-0}
+    if (( total == 0 )); then
+        fail "Tidak ada proxy di ${file}."
+        rm -f "$tmp" "$goodtmp"
+        return 1
+    fi
+
+    info "Menguji ${total} proxy (10 sekaligus, timeout 8s) ..."
+    batch=()
+    while IFS= read -r proxy; do
+        [[ -n "$proxy" ]] || continue
+        batch+=("$proxy")
+        if (( ${#batch[@]} >= 10 )); then
+            for p in "${batch[@]}"; do
+                (
+                    ip=$(curl --silent --max-time 8 --proxy "$p" https://api.ipify.org 2>/dev/null)
+                    [[ -n "$ip" ]] && printf '%s\n' "$p" >> "$goodtmp"
+                ) &
+            done
+            wait
+            batch=()
+        fi
+    done < "$tmp"
+
+    if (( ${#batch[@]} > 0 )); then
+        for p in "${batch[@]}"; do
+            (
+                ip=$(curl --silent --max-time 8 --proxy "$p" https://api.ipify.org 2>/dev/null)
+                [[ -n "$ip" ]] && printf '%s\n' "$p" >> "$goodtmp"
+            ) &
+        done
+        wait
+    fi
+
+    sort -u -o "$goodtmp" "$goodtmp" 2>/dev/null || true
+    good=$(awk 'END { print NR }' "$goodtmp")
+    good=${good:-0}
+
+    if (( APPLY_GOOD )); then
+        cp -f "$goodtmp" "$file"
+        ok "${good}/${total} proxy hidup. File diganti dengan yang hidup: ${file}"
+    else
+        cp -f "$goodtmp" "${file}.good"
+        ok "${good}/${total} proxy hidup. Daftar: ${file}.good"
+        printf 'Pakai yang hidup: bash recon.sh --proxy-clean (ganti file) atau arahkan PROXY_FILE ke %s.good\n' "$file"
+    fi
+
+    rm -f "$tmp" "$goodtmp"
+    return 0
+}
+
 # ---------------------------------------------------------------- arg parsing --
 DOMAIN=""
 ACTION=""
@@ -557,6 +643,8 @@ while (( $# )); do
         --notify-test) ACTION="notify" ;;
         --stop-bot)   ACTION="stopbot" ;;
         --bot-status) ACTION="botstatus" ;;
+        --proxy-check) ACTION="proxycheck" ;;
+        --proxy-clean) ACTION="proxyclean" ;;
         --no-setup)   NO_SETUP=1 ;;
         --report)
             ACTION="report"
@@ -619,6 +707,16 @@ case "$ACTION" in
     botstatus)
         bot_status
         exit 0
+        ;;
+    proxycheck)
+        APPLY_GOOD=0
+        proxy_check
+        exit $?
+        ;;
+    proxyclean)
+        APPLY_GOOD=1
+        proxy_check
+        exit $?
         ;;
 esac
 

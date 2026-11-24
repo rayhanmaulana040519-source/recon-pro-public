@@ -99,6 +99,23 @@ socks5://203.0.113.11:1080
 * **Check** — menu option `9` sends one request per proxy to a neutral endpoint
   and prints its exit IP, so a dead entry is found before a scan burns budget.
 
+Untuk daftar yang panjang (ratusan entri), saring dulu:
+
+```bash
+bash recon.sh --proxy-check    # uji semua, tulis <file>.good
+bash recon.sh --proxy-clean     # uji lalu ganti file dengan yang hidup
+```
+
+`--proxy-check` menguji 10 proxy sekaligus (timeout 8 detik) lewat
+`https://api.ipify.org`, dan menyimpan yang benar-benar menjawab.
+
+> **Jangan pakai daftar proxy gratis publik** untuk ini. Selain hampir semuanya
+> mati, proxy gratis bisa membaca traffic (termasuk cookie/session milikmu ke
+> target) dan sering dipakai untuk hal ilegal. Untuk bug bounty, pakai layanan
+> proxy berbayar yang punya endpoint rotating (satu gateway yang berganti IP tiap
+> request — cukup satu baris di file, lebih andal daripada ribuan proxy mati),
+> atau VPS sendiri.
+
 Configure it in Settings (option 7) or directly in `state/recon_pro.conf`:
 
 ```
