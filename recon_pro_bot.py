@@ -28,6 +28,17 @@ CONFIRM_TTL = 180
 DOMAIN_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
+# Commands the bot understands. Used to spot a command typed without the leading
+# slash, which otherwise looks like idle chat and gets no reply at all.
+KNOWN_COMMANDS = {
+    "start", "help",
+    "scan", "passive", "osint",
+    "scope", "stop", "cancel", "status",
+    "report", "findings", "finding", "bugs",
+    "log", "logs",
+    "doctor", "tools",
+}
+
 
 class BotError(Exception):
     pass
@@ -117,6 +128,7 @@ class ReconTelegramBot:
         self.offset_file = self.state_dir / "update_offset"
         self.pending_buttons = {}
         self.process = None
+        self._ignored_noted = set()
         self.offset = self._load_offset()
 
         lock_path = self.state_dir / "bot.lock"
@@ -724,6 +736,19 @@ class ReconTelegramBot:
         except BotError as error:
             print("Scan started, but its Telegram acknowledgement failed: {}".format(error), file=sys.stderr)
 
+    def _note_ignored(self, reason, identifier):
+        """Log an ignored update once per sender, to stderr only.
+
+        The bot stays silent towards unapproved users and group chats on purpose,
+        but the operator still needs to see that a message arrived and was
+        dropped, otherwise it looks like the bot is dead.
+        """
+        key = "{}:{}".format(reason, identifier)
+        if key in self._ignored_noted:
+            return
+        self._ignored_noted.add(key)
+        print("Ignoring update: {} ({}).".format(reason, identifier), file=sys.stderr, flush=True)
+
     def command(self, update):
         message = update.get("message") if isinstance(update, dict) else None
         if not isinstance(message, dict):
@@ -731,6 +756,7 @@ class ReconTelegramBot:
         chat = message.get("chat") or {}
         sender = message.get("from") or {}
         if chat.get("type") != "private":
+            self._note_ignored("group chat", chat.get("id"))
             return
         try:
             user_id = int(sender.get("id", 0))
@@ -738,17 +764,23 @@ class ReconTelegramBot:
         except (TypeError, ValueError):
             return
         if user_id not in self.users or chat_id != user_id:
+            self._note_ignored("unapproved user", user_id)
             return
 
-        text = message.get("text", "")
-        match = re.match(r"^/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+(.*))?$", text.strip(), re.S)
+        text = (message.get("text") or "").strip()
+        match = re.match(r"^/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+(.*))?$", text, re.S)
         if not match:
+            # A command typed without the leading slash is the most common reason
+            # someone thinks the bot is dead, so answer instead of staying silent.
+            first = text.split(maxsplit=1)[0].lower() if text else ""
+            if first in KNOWN_COMMANDS:
+                self.send(chat_id, "Perintah harus diawali garis miring.\n\nContoh: /scan example.com\nDaftar perintah: /help")
             return
         command = match.group(1).lower()
         argument = (match.group(2) or "").strip()
 
         if command in ("start", "help"):
-            self.send(chat_id, "Recon Pro bug-bounty bot\n\n/scan domain.tld — request a scan for an allowlisted apex domain (active pipeline + passive toolkit)\n/passive domain.tld — run only the passive OSINT + header toolkit\n/scope — list approved apex domains\n/scope add domain.tld — request adding an approved domain\n/scope remove domain.tld — request removing a domain\n/stop — request stopping your running scan\n/cancel — cancel pending button confirmations\n/status — show scan status, progress and the proxy pool\n/report [domain.tld] — send the latest report for an allowlisted domain\n/findings [domain.tld] — send the detailed findings (what it is, impact, how to check, fix)\n/log [domain.tld] — send the last scan log, pipeline log and per-stage errors\n/doctor or /tools — check which scanner tools are installed\n\nTanpa /passive pun, /scan sudah menjalankan toolkit pasif di akhir. Tap the action button (for example, Mulai scan or Tambah) or Batal on the bot's message. Buttons expire after 3 minutes. Private chat and an approved Telegram user ID are required; arbitrary shell commands are never accepted.")
+            self.send(chat_id, "Recon Pro bug-bounty bot\n\n/scan domain.tld — request a scan for an allowlisted apex domain (active pipeline + passive toolkit)\n/passive domain.tld — run only the passive OSINT + header toolkit\n/scope — list approved apex domains\n/scope add domain.tld — request adding an approved domain\n/scope remove domain.tld — request removing a domain\n/stop — request stopping your running scan\n/cancel — cancel pending button confirmations\n/status — show scan status, progress and the proxy pool\n/report [domain.tld] — send the latest report for an allowlisted domain\n/findings [domain.tld] — send the detailed findings (what it is, impact, how to check, fix)\n/log [domain.tld] — send the last scan log, pipeline log and per-stage errors\n/doctor or /tools — check which scanner tools are installed\n\nTanpa /passive pun, /scan sudah menjalankan toolkit pasif di akhir. Perintah harus diawali garis miring (contoh: /scan example.com), bukan scan saja. Tap the action button (for example, Mulai scan or Tambah) or Batal on the bot's message. Buttons expire after 3 minutes. Private chat and an approved Telegram user ID are required; arbitrary shell commands are never accepted.")
             return
 
         if command == "scope":

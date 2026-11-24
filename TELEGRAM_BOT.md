@@ -69,6 +69,25 @@ Open the bot's private chat and send `/start`, then add an authorized apex with 
 
 The bot runs one scan at a time. It does not accept arbitrary shell commands, URLs, IPs, ports, custom payloads, or off-scope targets. It does not automate prompt-injection payloads, data extraction, or exploit chaining; the current Recon Pro pipeline is a general web/domain bug-bounty scanner, not a dedicated AI-agent vulnerability scanner.
 
+## Troubleshooting: the bot does not answer
+
+Check these in order:
+
+1. **Private chat, not a group.** The bot ignores group chats entirely.
+2. **Leading slash.** Send `/scan example.com`, not `scan example.com`. A bare
+   command now gets a short hint instead of silence.
+3. **Your numeric user ID** must be in `TELEGRAM_ALLOWED_USERS` (get it from
+   `@userinfobot`). A wrong ID is ignored silently in chat, but the bot prints
+   `Ignoring update: unapproved user (…)` on stderr.
+4. **The bot must be running:** `python3 recon_pro_bot.py` and keep it alive
+   (`tmux`, `screen`, or a systemd unit).
+5. **Send `/start` to the bot once.** Telegram only lets a bot message a user who
+   started it.
+6. **`HTTP 409 Conflict`** means another process is polling the same token. Stop
+   it and disable any webhook, then restart.
+7. **Nothing at all in the log?** The token is wrong or the process died; run the
+   bot in the foreground to see the error.
+
 ## Operations and security
 
 - Keep the scan host under your control. Approved Telegram users can manage the local scope file from the private chat; protect the bot token and restrict `TELEGRAM_ALLOWED_USERS` to trusted operators.
