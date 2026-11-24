@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# Never commit secrets or per-run state.
+# The active pipeline keeps its config, proxy list, exclusion list, scope list
+# and bot state under ~/recon_pro/state, but these patterns also protect a
+# checkout that was pointed at the project folder.
+# ---------------------------------------------------------------------------
+recon_pro.conf
+proxies.txt
+exclusions.txt
+scope.txt
+extra_scope.txt
+*.log
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+.venv/
+__pycache__/
+*.pyc
+
+# ---------------------------------------------------------------------------
+# Passive toolkit runtime data (reports, snapshots, alerts).
+# The example report and the placeholders stay tracked.
+# ---------------------------------------------------------------------------
+bugbounty-toolkit/data/history/*.json
+bugbounty-toolkit/data/extra_scope.txt
+bugbounty-toolkit/reports/*.md
+bugbounty-toolkit/reports/alerts.jsonl
+!bugbounty-toolkit/reports/example-report.md
+!bugbounty-toolkit/data/history/.gitkeep
+
+# ---------------------------------------------------------------------------
+# Scan workspaces, in case one is ever created inside the checkout.
+# ---------------------------------------------------------------------------
+runs/
+reports/*/
+state/bot/
+
+# ---------------------------------------------------------------------------
+# OS noise
+# ---------------------------------------------------------------------------
+.DS_Store

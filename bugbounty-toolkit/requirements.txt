@@ -1,0 +1,12 @@
+# Passive bug-bounty toolkit — runtime dependencies.
+#
+# All three are widely used and pure-Python installable:
+#   requests   HTTP client (rate limiting and proxy rotation build on it)
+#   PyYAML     configuration file
+#   dnspython  DNS lookups for the passive record collector
+#
+# Nothing here touches the target beyond a normal HTTP GET/DNS lookup.
+
+requests>=2.31,<3
+PyYAML>=6.0,<7
+dnspython>=2.4,<3

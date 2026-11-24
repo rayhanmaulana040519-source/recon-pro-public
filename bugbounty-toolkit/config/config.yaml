@@ -1,0 +1,159 @@
+# =============================================================================
+# Passive bug-bounty toolkit configuration
+# =============================================================================
+# Every behaviour is driven from this file: nothing is hardcoded in the modules.
+# Read the comments before changing a value — the scope section decides what the
+# tool is allowed to touch at all.
+# =============================================================================
+
+project:
+  name: "Passive Bug Bounty Toolkit"
+  version: "1.0.0"
+  author: "rey"
+
+# -----------------------------------------------------------------------------
+# SCOPE — the only thing standing between "passive research" and "out of scope".
+#
+# An entry covers itself and every subdomain (example.com covers dev.example.com).
+# A leading "*." is accepted for clarity and treated the same way.
+# out_of_scope always wins, even when the same host is reachable through an
+# in-scope apex. strict: true also rejects bare IPs, single-label hosts and
+# entries that are not valid domain names.
+# -----------------------------------------------------------------------------
+scope:
+  in_scope:
+    - "example.com"
+    # - "another-program.example"   # add every apex you are authorized for
+
+  out_of_scope:
+    - "status.example.com"
+    - "billing.example.com"
+    # Anything the program marks out of scope belongs here, including the
+    # subdomains of these entries.
+
+  strict: true
+  history_file: "data/history/scope_history.jsonl"
+
+  # Domain tambahan yang dicatat otomatis oleh recon.sh saat kamu menjalankan
+  # mode pasif (satu domain per baris, komentar dengan # diizinkan). Ini supaya
+  # file ini tidak perlu diedit tangan dan komentar di config tetap utuh.
+  extra_scope_file: "data/extra_scope.txt"
+
+# -----------------------------------------------------------------------------
+# HTTP — one shared, rate-limited client for the whole run.
+#
+# per_host_delay is the minimum number of seconds between two requests to the
+# same host. Proxies are optional; when enabled, requests are rotated through the
+# list, which protects your own IP. DNS lookups and every scanner that cannot use
+# an HTTP proxy still leave from this host, so a proxy is not anonymity.
+# -----------------------------------------------------------------------------
+http:
+  user_agent: "PassiveReconToolkit/1.0 (authorized bug-bounty research; passive OSINT only)"
+  timeout: 15
+  max_retries: 2
+  per_host_delay: 1.0
+
+  proxies:
+    enabled: false
+    rotate: true
+    list:
+      # - "http://user:password@proxy.example.net:3128"
+      # - "socks5://127.0.0.1:1080"
+      # - "socks5h://127.0.0.1:1080"   # DNS resolved by the proxy
+
+# -----------------------------------------------------------------------------
+# COLLECTORS — what passive data is gathered. Every collector reads public data
+# or performs a single benign GET; none of them fuzzes, brute-forces or sends
+# payloads.
+# -----------------------------------------------------------------------------
+collectors:
+  certificate_transparency: true
+  dns_records: true
+  dns_types: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA"]
+  whois_rdap: true
+
+  # HTTP header analysis: one GET per host, root path only, redirects followed.
+  http_headers: true
+  max_hosts: 25            # cap on hosts probed per target
+  max_subdomains: 2000     # cap on names kept from certificate transparency
+
+# -----------------------------------------------------------------------------
+# ANALYSIS — the rule engine that turns raw data into explained findings.
+# -----------------------------------------------------------------------------
+analysis:
+  # Ask once with a foreign Origin header to see whether CORS reflects it.
+  # This is still a normal GET, but it sends a header a browser would send.
+  cors_probe: true
+
+  # Keep at most this many findings per category, highest score first, so a wide
+  # target cannot turn the report into hundreds of identical rows.
+  max_per_category: 10
+
+  # CNAME targets that are takeover-prone when the service behind them was
+  # deleted. Matching is a suffix match on the CNAME value.
+  dangling_cname_suffixes:
+    - "amazonaws.com"
+    - "cloudfront.net"
+    - "herokuapp.com"
+    - "azurewebsites.net"
+    - "cloudapp.net"
+    - "trafficmanager.net"
+    - "github.io"
+    - "herokudns.com"
+    - "netlify.app"
+    - "pantheonsite.io"
+    - "readthedocs.io"
+    - "surge.sh"
+    - "unbounce.com"
+    - "zendesk.com"
+    - "bitbucket.io"
+    - "fastly.net"
+    - "s3.amazonaws.com"
+    - "wordpress.com"
+
+  # Subdomain label fragments that usually mean a non-production surface.
+  sensitive_label_hints:
+    - "admin"
+    - "internal"
+    - "jenkins"
+    - "gitlab"
+    - "jira"
+    - "staging"
+    - "stg"
+    - "dev"
+    - "test"
+    - "uat"
+    - "preprod"
+    - "backup"
+    - "debug"
+    - "grafana"
+    - "kibana"
+    - "phpmyadmin"
+
+# -----------------------------------------------------------------------------
+# DATA — where snapshots are kept. One JSON file per run, per target.
+# -----------------------------------------------------------------------------
+data:
+  history_dir: "data/history"
+
+# -----------------------------------------------------------------------------
+# REPORT — Markdown for humans, JSON for tooling.
+# -----------------------------------------------------------------------------
+report:
+  output_dir: "reports"
+  markdown_template: "templates/report_template.md"
+  formats: ["markdown", "json"]
+  include_appendix: true
+
+# -----------------------------------------------------------------------------
+# LOGGING & NOTIFICATION
+# -----------------------------------------------------------------------------
+logging:
+  level: "INFO"
+  file: "logs/toolkit.log"
+  max_bytes: 2000000
+  backups: 3
+
+notify:
+  console: true
+  alerts_file: "reports/alerts.jsonl"
