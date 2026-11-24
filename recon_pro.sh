@@ -653,7 +653,8 @@ proxy_flag_name() {
     case "$tool" in
         httpx)                          candidates=("-proxy" "-http-proxy") ;;
         subfinder|nuclei|katana|tlsx|naabu) candidates=("-proxy") ;;
-        dalfox|whatweb)                 candidates=("--proxy") ;;
+        dalfox|whatweb|x8)              candidates=("--proxy") ;;
+        amass|findomain)                candidates=("--proxy" "-proxy") ;;
         ffuf)                           candidates=("-x") ;;
         *) return 1 ;;
     esac
@@ -1870,11 +1871,28 @@ module_urls() {
         return 0
     fi
 
+    # waybackurls and gau have no proxy flag; they honour the standard
+    # HTTP(S)_PROXY variables, so the proxy is passed through the environment
+    # when a pool is configured.
     if [[ -s "$hosts" ]] && check_tool waybackurls; then
-        run_tool waybackurls --stdout "$raw" waybackurls < "$hosts"
+        if proxies_loaded; then
+            pick_proxy
+            run_tool waybackurls --stdout "$raw" env \
+                "HTTPS_PROXY=${PROXY_CURRENT}" "HTTP_PROXY=${PROXY_CURRENT}" \
+                waybackurls < "$hosts"
+        else
+            run_tool waybackurls --stdout "$raw" waybackurls < "$hosts"
+        fi
     fi
     if [[ -s "$hosts" ]] && check_tool gau; then
-        run_tool gau --stdout "$raw" gau --threads "$THREADS" < "$hosts"
+        if proxies_loaded; then
+            pick_proxy
+            run_tool gau --stdout "$raw" env \
+                "HTTPS_PROXY=${PROXY_CURRENT}" "HTTP_PROXY=${PROXY_CURRENT}" \
+                gau --threads "$THREADS" < "$hosts"
+        else
+            run_tool gau --stdout "$raw" gau --threads "$THREADS" < "$hosts"
+        fi
     fi
     if [[ -s "$alive" ]] && check_tool katana; then
         proxy_args_for katana
@@ -1919,8 +1937,10 @@ module_x8() {
 
     head -n "$X8_MAX_URLS" "$OUTPUT_DIR/urls/params.txt" > "$targets"
     delay_ms=$(((1000 + RATE_LIMIT - 1) / RATE_LIMIT))
+    proxy_args_for x8
     run_tool x8 x8 -u "$targets" -w "$PARAM_WORDLIST" -W 1 -c 1 \
-        --delay "$delay_ms" --verify --strict --remove-empty -O json -o "$out"
+        --delay "$delay_ms" --verify --strict --remove-empty -O json -o "$out" \
+        "${P_ARGS[@]+"${P_ARGS[@]}"}"
 
     log OK "x8 candidates: $(count_lines "$out") line(s) in $out"
     stage_status "x8" "ok" "$(count_lines "$targets") URLs tested"

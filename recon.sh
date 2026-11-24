@@ -67,6 +67,9 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --proxy-check         uji semua proxy, tulis <file>.good
   bash recon.sh --proxy-clean         uji lalu ganti file dengan yang hidup
   bash recon.sh --self-test           cek sintaks semua skrip (setelah pull)
+  bash recon.sh --update              git pull + cek sintaks + saran restart bot
+  bash recon.sh --status              ringkasan: target, tool, proxy, bot, laporan
+  bash recon.sh --install-service     pasang bot sebagai service systemd (root)
   bash recon.sh --setup               pasang semua kebutuhan
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
@@ -724,6 +727,151 @@ self_test() {
     return "$rc"
 }
 
+# Updates the checkout, then re-checks every script.
+update_repo() {
+    local before after pid
+
+    if [[ ! -d "$SCRIPT_DIR/.git" ]]; then
+        fail "Bukan repo git: ${SCRIPT_DIR}"
+        return 1
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        fail "git tidak terpasang."
+        return 1
+    fi
+
+    before=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || true)
+    info "git pull di ${SCRIPT_DIR} ..."
+    if ! git -C "$SCRIPT_DIR" pull --ff-only; then
+        fail "git pull gagal (commit lokal / perubahan file?). Selesaikan dulu, lalu ulangi."
+        return 1
+    fi
+    after=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || true)
+
+    if [[ "$before" == "$after" ]]; then
+        ok "Sudah versi terbaru (${after})."
+    else
+        ok "Update: ${before:-?} -> ${after:-?}"
+    fi
+
+    self_test
+
+    pid=$(tr -dc '0-9' < "$RECON_HOME/state/bot/bot.lock" 2>/dev/null)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        warn "Bot masih jalan dengan kode lama (PID ${pid}). Restart: bash recon.sh --stop-bot && python3 recon_pro_bot.py"
+    fi
+    return 0
+}
+
+# One-screen overview of the whole install.
+show_status() {
+    local domain have=0 miss=0 t pf count=0 pid findings=0
+    local -a missing_tools=()
+
+    domain=$(latest_domain)
+
+    printf '%b=== STATUS ===%b\n' "${BOLD}${CYAN}" "$NC"
+    printf 'Folder kode  : %s\n' "$SCRIPT_DIR"
+    printf 'Folder data  : %s\n' "$RECON_HOME"
+    printf 'Target akhir : %s\n' "${domain:-<belum ada>}"
+
+    for t in curl jq subfinder httpx dnsx nuclei tlsx naabu katana waybackurls gau dalfox ffuf nmap x8; do
+        if command -v "$t" >/dev/null 2>&1; then
+            have=$((have + 1))
+        else
+            miss=$((miss + 1))
+            missing_tools+=("$t")
+        fi
+    done
+    printf 'Tool         : %s ok, %s missing%s\n' "$have" "$miss" \
+        "$( (( miss )) && printf ' (%s)' "${missing_tools[*]}" )"
+
+    if toolkit_ready; then
+        printf 'Toolkit pasif: ok (%s)\n' "$TOOLKIT_DIR/.venv"
+    else
+        printf 'Toolkit pasif: belum siap (bash setup.sh --python-only)\n'
+    fi
+
+    pf=$(conf_value PROXY_FILE || true)
+    [[ -n "$pf" ]] || pf="state/proxies.txt"
+    [[ "$pf" = /* ]] || pf="${RECON_HOME%/}/${pf}"
+    if [[ -f "$pf" ]]; then
+        count=$(grep -cvE '^[[:space:]]*(#|$)' "$pf" 2>/dev/null)
+        printf 'Proxy        : %s entr(y) (%s)\n' "${count:-0}" "$pf"
+    else
+        printf 'Proxy        : belum ada file (%s)\n' "$pf"
+    fi
+
+    pid=$(tr -dc '0-9' < "$RECON_HOME/state/bot/bot.lock" 2>/dev/null)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        printf 'Bot          : jalan (PID %s)\n' "$pid"
+    else
+        printf 'Bot          : tidak jalan\n'
+    fi
+
+    if [[ -n "$domain" && -d "$RUNS_DIR/$domain/latest" ]]; then
+        if [[ -s "$RUNS_DIR/$domain/latest/final/findings.tsv" ]]; then
+            findings=$(awk 'END { print NR }' "$RUNS_DIR/$domain/latest/final/findings.tsv")
+        fi
+        printf 'Run terakhir : %s (%s temuan)\n' "$domain" "${findings:-0}"
+    fi
+
+    printf 'Laporan aktif: %s\n' "$(report_path "$domain" 2>/dev/null || printf '-')"
+    printf 'Laporan pasif: %s\n' "$(passive_report_path "$domain" 2>/dev/null || printf '-')"
+    return 0
+}
+
+# Installs the bot as a systemd service so it survives SSH logout and reboots.
+install_service() {
+    local unit="/etc/systemd/system/recon-pro-bot.service"
+    local py="python3"
+
+    if (( EUID != 0 )); then
+        fail "Perlu root: sudo bash recon.sh --install-service"
+        return 1
+    fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        fail "systemd tidak tersedia di mesin ini."
+        return 1
+    fi
+    command -v python3 >/dev/null 2>&1 && py=$(command -v python3)
+
+    if ! "$py" -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' \
+        "$SCRIPT_DIR/recon_pro_bot.py" 2>/dev/null; then
+        fail "recon_pro_bot.py belum lolos cek sintaks; jalankan --self-test dulu."
+        return 1
+    fi
+
+    cat > "$unit" <<EOF
+[Unit]
+Description=Recon Pro Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=${py} ${SCRIPT_DIR}/recon_pro_bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    if ! systemctl daemon-reload || ! systemctl enable --now recon-pro-bot; then
+        fail "Gagal mengaktifkan service. Cek: systemctl status recon-pro-bot"
+        return 1
+    fi
+
+    ok "Service terpasang: ${unit}"
+    printf 'Cek   : systemctl status recon-pro-bot\n'
+    printf 'Log   : journalctl -u recon-pro-bot -f\n'
+    printf 'Stop  : systemctl disable --now recon-pro-bot\n'
+    return 0
+}
+
 # ---------------------------------------------------------------- arg parsing --
 DOMAIN=""
 ACTION=""
@@ -746,6 +894,9 @@ while (( $# )); do
         --proxy-check) ACTION="proxycheck" ;;
         --proxy-clean) ACTION="proxyclean" ;;
         --self-test)  ACTION="selftest" ;;
+        --update)     ACTION="update" ;;
+        --status)     ACTION="status" ;;
+        --install-service) ACTION="service" ;;
         --no-setup)   NO_SETUP=1 ;;
         --report)
             ACTION="report"
@@ -832,6 +983,18 @@ case "$ACTION" in
         ;;
     selftest)
         self_test
+        exit $?
+        ;;
+    update)
+        update_repo
+        exit $?
+        ;;
+    status)
+        show_status
+        exit 0
+        ;;
+    service)
+        install_service
         exit $?
         ;;
 esac

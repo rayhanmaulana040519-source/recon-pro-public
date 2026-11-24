@@ -37,6 +37,10 @@ bash recon.sh --report                # domain terakhir
 bash recon.sh --log example.com       # ringkasan stage + 80 baris log + error per stage
 bash recon.sh --failures example.com  # hanya tool/stage yang gagal atau di-skip
 bash recon.sh --tools                 # tool + versi + status toolkit Python
+bash recon.sh --status                # ringkasan: target, tool, proxy, bot, laporan
+bash recon.sh --update                # git pull + cek sintaks + saran restart bot
+bash recon.sh --self-test             # cek sintaks semua skrip
+bash recon.sh --install-service       # bot sebagai service systemd (bertahan reboot)
 bash recon.sh --setup                 # pasang/rapikan semua kebutuhan
 bash recon.sh --no-setup example.com  # jangan pasang apa pun, langsung scan
 bash recon.sh                         # menu interaktif (scan bertahap, settings, proxy)
