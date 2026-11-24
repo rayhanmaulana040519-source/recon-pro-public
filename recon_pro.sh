@@ -486,6 +486,12 @@ stage_status() {
     printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >> "${OUTPUT_DIR}/logs/stages.tsv" 2>/dev/null || true
 }
 
+# Hides proxy credentials in a command line before it is written to a log or a
+# report: "http://user:pass@host" becomes "http://***@host".
+redact_cmd() {
+    printf '%s' "$*" | sed -E 's#(://)[^/@[:space:]]+@#\1***@#g'
+}
+
 # run_tool <stage> [--stdout FILE] [--ok CODES] <command...>
 #
 # Runs a scanner under STAGE_TIMEOUT. stdout is appended to the --stdout file
@@ -525,7 +531,7 @@ run_tool() {
         fi
     fi
     status=$?
-    printf 'exit=%s :: %s\n' "$status" "${cmd[*]}" >> "$err"
+    printf 'exit=%s :: %s\n' "$status" "$(redact_cmd "${cmd[*]}")" >> "$err"
 
     if [[ ",${ok_codes}," != *",${status},"* ]]; then
         log WARN "$(basename -- "${cmd[0]}"): $(describe_status "$status") — see logs/${stage}.err"
@@ -641,7 +647,7 @@ curl_any() {
 # that renamed or dropped it makes the stage run without a proxy instead of
 # failing on an unknown option.
 proxy_flag_name() {
-    local tool="$1" candidate
+    local tool="$1" candidate help
     local -a candidates=()
 
     case "$tool" in
@@ -652,8 +658,14 @@ proxy_flag_name() {
         *) return 1 ;;
     esac
 
+    # Read the help once into a variable. Piping it straight into "grep -q"
+    # closes the pipe early, and with "set -o pipefail" the SIGPIPE makes the
+    # whole pipeline look like a failure — which silently disabled the proxy for
+    # every tool with a long help text.
+    help=$("$tool" -h 2>&1 || true)
+
     for candidate in "${candidates[@]}"; do
-        if "$tool" -h 2>&1 | grep -qE "(^|[[:space:],=])${candidate}([[:space:],=]|$)"; then
+        if grep -qE "(^|[[:space:],=])${candidate}([[:space:],=]|$)" <<< "$help"; then
             printf '%s' "$candidate"
             return 0
         fi
@@ -1403,7 +1415,14 @@ module_subdomains() {
     if check_tool assetfinder; then run_tool assetfinder --stdout "$raw" assetfinder --subs-only "$DOMAIN"; fi
     if check_tool amass; then run_tool amass --stdout "$raw" amass enum -passive -d "$DOMAIN"; fi
     if check_tool findomain; then run_tool findomain --stdout "$raw" findomain -t "$DOMAIN" -q; fi
-    if check_tool chaos; then run_tool chaos --stdout "$raw" chaos -d "$DOMAIN" -silent; fi
+    if check_tool chaos; then
+        if [[ -n "${PDCP_API_KEY:-}" ]]; then
+            run_tool chaos --stdout "$raw" chaos -d "$DOMAIN" -silent
+        else
+            log WARN "chaos dilewati: PDCP_API_KEY belum diset (ambil dari ProjectDiscovery Cloud)."
+            stage_status "chaos" "skipped" "no PDCP_API_KEY"
+        fi
+    fi
 
     # Certificate transparency and the free passive-DNS APIs. Every source is
     # additive: a rate limit or an outage costs that one source, never the list.
@@ -1976,6 +1995,23 @@ module_nuclei() {
     stage_status "nuclei" "ok" "$(count_lines "$out") result lines"
 }
 
+# dalfox_run <mode> <targets> <out> <delay-ms>
+# Runs one dalfox invocation with the mode the installed build understands.
+# Proxy arguments are already in P_ARGS.
+dalfox_run() {
+    local mode="$1" targets="$2" out="$3" delay_ms="$4"
+
+    if [[ "$mode" == "scan" ]]; then
+        run_tool dalfox --ok "0,1" dalfox scan -i file "$targets" -S --only-poc v \
+            --delay "$delay_ms" -o "$out" \
+            "${P_ARGS[@]+"${P_ARGS[@]}"}"
+    else
+        run_tool dalfox --ok "0,1" dalfox file "$targets" -S --only-poc v \
+            --delay "$delay_ms" -o "$out" \
+            "${P_ARGS[@]+"${P_ARGS[@]}"}"
+    fi
+}
+
 module_xss() {
     log INFO "XSS checks (dalfox)"
     local out="$OUTPUT_DIR/xss/dalfox.txt"
@@ -1997,28 +2033,28 @@ module_xss() {
     head -n "$DALFOX_MAX_URLS" "$OUTPUT_DIR/urls/params.txt" > "$targets"
     delay_ms=$(((1000 + RATE_LIMIT - 1) / RATE_LIMIT))
 
-    # dalfox exits 1 when it finds something, so 0 and 1 both count as a run.
-    # Only exit 2+ (bad flag, bad input) moves on to the next invocation style:
-    # dalfox v3 takes "scan -i file" and -r; v2 takes "file" and no rate flag.
-    local rc=0
+    # dalfox builds differ: some take "scan -i file", others only "file".
+    # Ask the installed build which sub-commands it lists instead of guessing,
+    # and retry the other style once if it rejects this one.
+    local rc=0 mode="file" dalfox_help errf="${OUTPUT_DIR}/logs/dalfox.err" alt
+    dalfox_help=$(dalfox --help 2>&1 || true)
+    if grep -qE '^[[:space:]]+scan[[:space:]]' <<< "$dalfox_help"; then
+        mode="scan"
+    fi
+
+    : > "$errf"
     proxy_args_for dalfox
-    run_tool dalfox --ok "0,1" dalfox scan -i file "$targets" -S --only-poc v \
-        --delay "$delay_ms" -r "$RATE_LIMIT" -o "$out" \
-        "${P_ARGS[@]+"${P_ARGS[@]}"}"
+    dalfox_run "$mode" "$targets" "$out" "$delay_ms"
     rc=$?
-    # A timeout (124) or a missing binary (127) is not fixed by another
-    # invocation style, so those stop the retries instead of tripling the time.
-    if (( rc != 124 && rc != 127 && rc > 1 )); then
-        run_tool dalfox --ok "0,1" dalfox scan -i file "$targets" -S --only-poc v \
-            --delay "$delay_ms" -o "$out" \
-            "${P_ARGS[@]+"${P_ARGS[@]}"}"
+
+    if grep -qiE 'unknown command|unknown flag|invalid flag' "$errf" 2>/dev/null; then
+        alt="file"
+        [[ "$mode" == "file" ]] && alt="scan"
+        log WARN "dalfox menolak mode ${mode}; mencoba ${alt} ..."
+        dalfox_run "$alt" "$targets" "$out" "$delay_ms"
         rc=$?
     fi
-    if (( rc != 124 && rc != 127 && rc > 1 )); then
-        run_tool dalfox --ok "0,1" dalfox file "$targets" -S --only-poc v -o "$out" \
-            "${P_ARGS[@]+"${P_ARGS[@]}"}"
-        rc=$?
-    fi
+
     if (( rc > 1 )); then
         log WARN "dalfox did not complete ($(describe_status "$rc")); see logs/dalfox.err"
         stage_status "xss" "failed" "dalfox $(describe_status "$rc")"

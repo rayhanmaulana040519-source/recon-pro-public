@@ -630,7 +630,7 @@ proxy_check() {
 # or were skipped, and the stderr each stage wrote. Complements --log, which is
 # the full picture.
 show_failures() {
-    local domain="${1:-}" run_dir err_file shown=0 missing=0 bad=0
+    local domain="${1:-}" run_dir err_file shown=0 missing=0 failed=0 skipped=0
 
     domain="${domain:-$(latest_domain)}"
     if [[ -z "$domain" ]]; then
@@ -658,11 +658,22 @@ show_failures() {
         printf '_tool_inventory.txt tidak ada (run terlalu lama/terputus)_\n'
     fi
 
-    printf '\n--- STAGE TIDAK "ok" ---\n'
+    printf '\n--- STAGE GAGAL ---\n'
     if [[ -s "$run_dir/logs/stages.tsv" ]]; then
-        awk -F'\t' '$2 != "ok" { printf "%-12s %-10s %s\n", $1, $2, $3 }' "$run_dir/logs/stages.tsv"
-        bad=$(awk -F'\t' '$2 != "ok"' "$run_dir/logs/stages.tsv" | wc -l | tr -d '[:space:]')
-        (( ${bad:-0} == 0 )) && printf '_semua stage ok_\n'
+        failed=$(awk -F'\t' '$2 == "failed" || $2 == "degraded"' "$run_dir/logs/stages.tsv" 2>/dev/null | wc -l | tr -d '[:space:]')
+        if (( ${failed:-0} > 0 )); then
+            awk -F'\t' '$2 == "failed" || $2 == "degraded" { printf "%-12s %-10s %s\n", $1, $2, $3 }' "$run_dir/logs/stages.tsv"
+        else
+            printf '_tidak ada stage yang gagal_\n'
+        fi
+
+        printf '\n--- STAGE DISKIP (normal, bukan error) ---\n'
+        skipped=$(awk -F'\t' '$2 == "skipped"' "$run_dir/logs/stages.tsv" 2>/dev/null | wc -l | tr -d '[:space:]')
+        if (( ${skipped:-0} > 0 )); then
+            awk -F'\t' '$2 == "skipped" { printf "%-12s %s\n", $1, $3 }' "$run_dir/logs/stages.tsv"
+        else
+            printf '_tidak ada stage yang diskip_\n'
+        fi
     else
         printf '_stages.tsv tidak ada_\n'
     fi
