@@ -9,10 +9,11 @@ GraphQL, JavaScript secrets) on top of nuclei, dalfox, x8, ffuf, naabu and nmap.
 an `AUTHORIZED` confirmation and only ever looks at the apex you give it, minus
 the hosts in the exclusion file.
 
-## Quick start (satu perintah)
+## Quick start (setup sekali, lalu satu perintah per kebutuhan)
 
 ```bash
 bash setup.sh                 # sekali: pasang semua, termasuk toolkit Python
+bash recon.sh --web           # dashboard lokal; token dibuat dan disimpan otomatis
 bash recon.sh example.com     # scan aktif + toolkit pasif sekaligus
 ```
 
@@ -193,3 +194,53 @@ off by default (`0` = keep every run).
   401, 403, 404 or 5xx page is not the application's.
 - Parameter candidates drop analytics-only URLs and static assets, so dalfox and
   x8 spend their budget on real endpoints.
+
+## Dashboard web lokal (VPS & Termux)
+
+Dashboard berjalan pada mesin yang sama dengan scanner. Tidak ada scan yang dijalankan dari cloud preview: Python server lokal mengontrol `recon.sh` langsung di VPS atau perangkat Termux.
+
+### Jalankan di VPS Linux
+
+Setelah repository tersedia, cukup jalankan:
+
+```bash
+bash setup.sh                 # sekali saja, bila tool Recon Pro belum dipasang
+bash recon.sh --web
+```
+
+Buka `http://127.0.0.1:8765`. Launcher membuat token aman otomatis, menyimpannya di `state/web_token` dengan izin privat, lalu menampilkan token untuk login. Hentikan dengan `Ctrl-C`. Untuk akses dari laptop/ponsel, biarkan server bind lokal dan gunakan SSH tunnel:
+
+```bash
+ssh -L 8765:127.0.0.1:8765 user@alamat-vps
+```
+
+Lalu buka `http://127.0.0.1:8765` pada perangkat yang membuat tunnel.
+
+### Jalankan di Termux / Android
+
+Pastikan Bash dan Python tersedia, lalu jalankan launcher yang sama:
+
+```bash
+pkg install bash python
+bash recon.sh --web
+```
+
+Buka `http://127.0.0.1:8765` di browser Android. Scanner dan seluruh file hasil tetap berjalan/tersimpan di Termux. Dashboard tidak memerlukan instalasi dependensi Python tambahan.
+
+Alias `bash recon.sh --dashboard` dan launcher langsung `bash web_ui/start.sh` juga tersedia. Opsi `RECON_WEB_PORT` dapat mengganti port default 8765.
+
+### Penggunaan & keamanan
+
+- Masukkan token yang ditampilkan launcher. Token server disimpan di `state/web_token` dengan izin owner-only agar tidak perlu dibuat ulang; token sesi browser hanya berada di `sessionStorage`, dan API meminta autentikasi pada setiap panggilan.
+- Dashboard bind ke `127.0.0.1` secara default. Gunakan SSH tunnel untuk akses VPS. Jangan membuka port server langsung ke internet.
+- Bila harus memasang reverse proxy, batasi firewall dan pakai TLS. Bind non-local memerlukan `RECON_WEB_ALLOW_REMOTE=1` serta `RECON_WEB_ALLOWED_HOSTS` yang berisi hostname persis; server dashboard sendiri tidak menyediakan TLS.
+- Tambahkan hanya apex yang eksplisit diizinkan program bounty ke Scope & Proxy. Daftar disimpan pada `~/recon_pro/state/scope.txt`; setiap pemindaian memerlukan konfirmasi operator dan server memeriksa ulang allowlist serta `state/exclusions.txt`.
+- Pipeline lengkap dapat melakukan pemeriksaan aktif. Passive saja membatasi kerja ke toolkit OSINT dan pemeriksaan header. Scan web selalu memakai `--no-setup`, sehingga instalasi tool tidak dijalankan dari UI.
+- Proxy dapat dikelola dari halaman Scope & Proxy. Kredensial tidak dikembalikan pada daftar ringkas, file disimpan dengan izin owner-only, dan log yang ditampilkan menyamarkan pola kredensial yang dikenal. DNS dan nmap tetap tidak melalui proxy.
+- Server memakai Python standard library saja. Kebutuhan Recon Pro (Bash, scanner dan dependensi toolkit pasif) tetap harus dipasang di host terlebih dahulu.
+- Tab **Laporan** memungkinkan pemilihan target, riwayat run, lalu setiap file laporan final; laporan pasif Markdown/JSON historis juga tersedia. Tab **Log aktivitas** menampilkan file pipeline dan semua error per stage pada run terpilih. `toolkit.log` beserta rotasinya adalah log global toolkit pasif, bukan log per-run.
+- Isi dan unduhan file disamarkan untuk pola kredensial yang dikenali. Demi batas memori, isi per file dibatasi 16 MiB; file lebih besar ditandai terpotong.
+- Riwayat mengikuti pengaturan `OUTPUT_BASE` pada `state/recon_pro.conf`, termasuk jika folder run dipindahkan. Run lama yang sudah dihapus oleh `KEEP_RUNS` tidak dapat dipulihkan dari dashboard.
+- Tombol Run FreeMilk hanya menampilkan UI statis dan tidak dapat mengakses scanner lokal. Untuk pemindaian, buka alamat lokal VPS/Termux sesuai langkah di atas.
+
+Konfigurasi opsional: `RECON_PRO_HOME` memindahkan folder data yang sama dengan pipeline; `RECON_WEB_HOST`, `RECON_WEB_PORT`, `BUGBOUNTY_SCOPE_FILE`, dan `RECON_WEB_ALLOWED_HOSTS` dapat diatur sesuai lingkungan.

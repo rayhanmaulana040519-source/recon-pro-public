@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1018">
+  <meta name="description" content="Dashboard lokal untuk Recon Pro di VPS dan Termux.">
+  <title>Recon Pro · Control Room</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div>
+  <section class="login-screen" id="loginScreen" aria-labelledby="loginTitle">
+    <div class="login-card">
+      <a class="brand brand-login" href="#" aria-label="Recon Pro">
+        <span class="brand-mark"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3.5 35 12v16L20 36.5 5 28V12L20 3.5Z"/><path d="M13 24.5 19 11l8 18M15.5 20h10"/></svg></span>
+        <span><strong>RECON<span>PRO</span></strong><small>LOCAL CONTROL ROOM</small></span>
+      </a>
+      <div class="login-kicker"><i></i> PRIVATE SCAN CONSOLE</div>
+      <h1 id="loginTitle">Selamat datang<br><em>kembali.</em></h1>
+      <p class="muted">Hubungkan ke dashboard yang berjalan di mesin Recon Pro Anda.</p>
+      <div class="preview-notice hidden" id="previewNotice">Preview statis tidak terhubung ke scanner. Jalankan dashboard dari VPS atau Termux untuk mengakses backend lokal.</div>
+      <form id="loginForm" autocomplete="off">
+        <label class="field-label" for="accessToken">Token akses lokal</label>
+        <div class="input-wrap"><span class="input-icon">⌑</span><input id="accessToken" type="password" placeholder="Tempel token dashboard" minlength="32" required autocomplete="current-password"><button class="visibility-button" id="toggleToken" type="button" aria-label="Tampilkan token">Tampilkan</button></div>
+        <button class="button button-primary button-wide" type="submit">Masuk ke dashboard <span aria-hidden="true">↗</span></button>
+        <p class="form-error" id="loginError" role="alert"></p>
+      </form>
+      <p class="login-foot"><span class="lock-dot"></span> Akses dibatasi · data tetap di mesin Anda</p>
+    </div>
+    <div class="login-aside"><div class="orbit orbit-a"></div><div class="orbit orbit-b"></div><div class="orbit-center"><span>R</span><i></i></div><div class="aside-caption"><span>01 / RECONNAISSANCE</span><strong>Know your surface.<br>Stay in your scope.</strong><p>Semua pemindaian berjalan lokal, dengan kontrol scope sebelum setiap run.</p></div></div>
+  </section>
+
+  <div class="app-shell hidden" id="appShell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" aria-label="Recon Pro overview">
+        <span class="brand-mark"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3.5 35 12v16L20 36.5 5 28V12L20 3.5Z"/><path d="M13 24.5 19 11l8 18M15.5 20h10"/></svg></span>
+        <span><strong>RECON<span>PRO</span></strong><small>CONTROL ROOM</small></span>
+      </a>
+      <div class="side-label">WORKSPACE</div>
+      <nav class="side-nav" aria-label="Navigasi utama">
+        <button class="nav-item active" data-page="overview"><span class="nav-icon">◫</span> Ikhtisar <kbd>01</kbd></button>
+        <button class="nav-item" data-page="scan"><span class="nav-icon">⌁</span> Pemindaian <kbd>02</kbd></button>
+        <button class="nav-item" data-page="reports"><span class="nav-icon">▤</span> Laporan <kbd>03</kbd></button>
+        <button class="nav-item" data-page="logs"><span class="nav-icon">≋</span> Log aktivitas <kbd>04</kbd></button>
+        <button class="nav-item" data-page="tools"><span class="nav-icon">⌘</span> Inventaris tool <kbd>05</kbd></button>
+      </nav>
+      <div class="side-label side-label-lower">KONFIGURASI</div>
+      <nav class="side-nav" aria-label="Konfigurasi">
+        <button class="nav-item" data-page="scope"><span class="nav-icon">◎</span> Scope & proxy <kbd>06</kbd></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="host-chip"><span class="host-indicator"></span><span><b id="hostLabel">LOCAL HOST</b><small>VPS · TERMUX · LINUX</small></span><span class="host-menu">···</span></div>
+        <button class="signout-button" id="signOut"><span>↪</span> Keluar dari sesi</button>
+        <div class="version-note">RECON PRO <span>·</span> LOCAL BUILD</div>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <div class="breadcrumb"><span>RECON PRO</span><b>/</b><strong id="pageCrumb">IKHTISAR</strong></div>
+        <div class="topbar-right"><div class="connection-pill"><i></i><span id="connectionText">Backend lokal</span></div><button class="icon-button refresh-button" id="refreshButton" aria-label="Muat ulang data" title="Muat ulang">↻</button><span class="avatar">RP</span></div>
+      </header>
+      <div class="page-content">
+        <section class="page-view" data-view="overview">
+          <div class="page-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> DASHBOARD / 01</div><h1>Ikhtisar <span>operasi.</span></h1><p>Pantau aktivitas recon dan jaga setiap target tetap dalam scope.</p></div><div class="heading-actions"><span class="live-label"><i></i> SISTEM AKTIF</span><button class="button button-primary" data-go="scan"><span>＋</span> Pemindaian baru</button></div></div>
+          <div class="hero-strip"><div class="hero-copy"><div class="hero-tag"><span class="spark">✳</span> AUTHORIZED RECONNAISSANCE</div><h2>Kenali permukaan.<br><em>Jaga batasnya.</em></h2><p>Mulai dari scope yang disetujui. Hasil dan log tersimpan di mesin ini, bukan di cloud.</p><button class="text-link" data-go="scope">Tinjau daftar scope <span>→</span></button></div><div class="hero-graphic" aria-hidden="true"><div class="radar-grid"></div><div class="radar-ring ring-one"></div><div class="radar-ring ring-two"></div><div class="radar-ring ring-three"></div><div class="radar-sweep"></div><div class="radar-center"><span>RP</span></div><i class="radar-point point-one"></i><i class="radar-point point-two"></i><i class="radar-point point-three"></i><div class="radar-label">SCOPE MONITOR <b>●</b></div></div><div class="hero-index">01<span>—</span>06</div></div>
+          <div class="metric-grid">
+            <article class="metric-card"><div class="metric-top"><span>TARGET TERAKHIR</span><i class="metric-icon icon-violet">◎</i></div><strong class="metric-value metric-domain" id="metricTarget">—</strong><div class="metric-foot"><span class="metric-dot violet-dot"></span><span id="metricTargetNote">Belum ada run</span></div></article>
+            <article class="metric-card"><div class="metric-top"><span>TEMUAN TERKINI</span><i class="metric-icon icon-amber">◇</i></div><strong class="metric-value" id="metricFindings">—</strong><div class="metric-foot"><span class="metric-dot amber-dot"></span><span>Dari laporan aktif terakhir</span></div></article>
+            <article class="metric-card"><div class="metric-top"><span>TOOLS TERSEDIA</span><i class="metric-icon icon-green">⌘</i></div><strong class="metric-value"><span id="metricTools">—</span><small id="metricToolsTotal">/ —</small></strong><div class="metric-foot"><span class="metric-dot green-dot"></span><span>Terpasang pada mesin ini</span></div></article>
+            <article class="metric-card"><div class="metric-top"><span>POOL PROXY</span><i class="metric-icon icon-blue">⇄</i></div><strong class="metric-value"><span id="metricProxies">—</span><small> entri</small></strong><div class="metric-foot"><span class="metric-dot blue-dot"></span><span id="metricProxyNote">Rotasi tidak diketahui</span></div></article>
+          </div>
+          <div class="overview-grid">
+            <article class="panel recent-panel"><div class="panel-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> AKTIVITAS</div><h3>Run terbaru</h3></div><button class="quiet-button" data-go="reports">Semua laporan <span>→</span></button></div><div class="scan-current hidden" id="scanCurrent"><div class="scan-pulse"><i></i></div><div class="scan-current-copy"><strong id="currentScanTitle">Scan berjalan</strong><small id="currentScanDetail">Menunggu output…</small></div><button class="mini-stop" id="stopScanSmall">Hentikan</button></div><div class="empty-state" id="emptyRuns"><div class="empty-orbit">⌁</div><strong>Belum ada run</strong><p>Jalankan scan pada domain yang tercantum di scope.</p><button class="text-link" data-go="scan">Buat pemindaian pertama <span>→</span></button></div><div class="target-list" id="targetList"></div></article>
+            <article class="panel quick-panel"><div class="panel-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> QUICK ACCESS</div><h3>Kontrol cepat</h3></div><span class="panel-menu">···</span></div><button class="quick-action" data-go="scan"><span class="quick-symbol quick-purple">⌁</span><span><b>Mulai pemindaian</b><small>Full pipeline atau passive</small></span><i>↗</i></button><button class="quick-action" data-go="reports"><span class="quick-symbol quick-blue">▤</span><span><b>Buka laporan</b><small>Markdown aktif & pasif</small></span><i>↗</i></button><button class="quick-action" data-go="logs"><span class="quick-symbol quick-orange">≋</span><span><b>Periksa log</b><small>Stage, output, dan error</small></span><i>↗</i></button><button class="quick-action" data-go="tools"><span class="quick-symbol quick-green">⌘</span><span><b>Inventaris tool</b><small>Deteksi tool di host ini</small></span><i>↗</i></button><div class="scope-reminder"><span class="reminder-icon">!</span><p><b>Ingat batas program.</b> Pastikan target, teknik, dan waktu uji diizinkan oleh program bounty.</p></div></article>
+          </div>
+          <div class="footer-note"><span>◆</span> DATA DISIMPAN LOKAL <i>·</i> OTORISASI TETAP TANGGUNG JAWAB OPERATOR</div>
+        </section>
+
+        <section class="page-view hidden" data-view="scan">
+          <div class="page-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> WORKSPACE / 02</div><h1>Siapkan <span>pemindaian.</span></h1><p>Hanya apex domain yang terdaftar di scope lokal dapat dijalankan.</p></div><div class="heading-actions"><span class="safe-badge"><i></i> SCOPE CHECK AKTIF</span></div></div>
+          <div class="scan-layout"><div class="panel scan-form-panel"><div class="panel-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> KONFIGURASI RUN</div><h3>Target & metode</h3></div><span class="step-count">01 <i>/</i> 03</span></div>
+            <form id="scanForm"><label class="field-label" for="scanTarget">Apex domain</label><div class="select-wrap"><select id="scanTarget" required><option value="">Pilih domain scope…</option></select><span>⌄</span></div><p class="field-hint">Daftarkan domain resmi dari program bounty di halaman Scope & Proxy.</p>
+              <div class="form-divider"></div><div class="field-label">Jenis pemindaian</div><div class="mode-options"><label class="mode-option selected"><input type="radio" name="scanMode" value="full" checked><span class="mode-radio"></span><span class="mode-copy"><b>Pipeline lengkap</b><small>Recon aktif + laporan pasif</small></span><span class="mode-tag">FULL</span></label><label class="mode-option"><input type="radio" name="scanMode" value="passive"><span class="mode-radio"></span><span class="mode-copy"><b>Passive saja</b><small>OSINT, DNS, RDAP & header</small></span><span class="mode-tag mode-tag-muted">LOW IMPACT</span></label></div>
+              <div class="form-divider"></div><label class="consent-box"><input id="scanAuthorized" type="checkbox" required><span class="custom-check">✓</span><span><b>Saya memiliki izin tertulis untuk menguji domain ini.</b><small>Saya sudah memeriksa aturan program, daftar in-scope, teknik, batas laju, dan pengecualian sebelum melanjutkan.</small></span></label>
+              <button class="button button-primary button-wide scan-submit" type="submit"><span>⌁</span> Tinjau & mulai scan <i>→</i></button><p class="form-footnote"><span>◈</span> Scan berjalan pada host ini. Setup tool tidak akan dijalankan otomatis.</p>
+            </form>
+          </div><div class="scan-side"><article class="panel safety-panel"><div class="safety-icon">◉</div><div class="eyebrow"><span class="eyebrow-line"></span> GUARDRAILS</div><h3>Scope sebelum<br>semua hal.</h3><p>Server memvalidasi domain sekali lagi sebelum memanggil pipeline. File exclusion selalu menang.</p><div class="guard-list"><div><span>01</span><b>Domain cocok persis</b><i>●</i></div><div><span>02</span><b>Exclusion diperiksa</b><i>●</i></div><div><span>03</span><b>Konfirmasi operator</b><i>●</i></div></div><button class="text-link" data-go="scope">Kelola scope <span>→</span></button></article><article class="panel scan-info"><div class="info-icon">i</div><div><b>Perhatikan cakupan proxy</b><p>DNS dan nmap dapat mengirim traffic langsung dari host meskipun proxy aktif. Periksa aturan program dan konfigurasi proxy sebelum run.</p></div></article></div></div>
+          <article class="panel console-panel"><div class="console-head"><div><span class="console-indicator" id="consoleIndicator"></span><b>OUTPUT PEMINDAIAN</b><small id="consoleStatus">Menunggu scan</small></div><button class="quiet-button" id="clearConsole">Bersihkan tampilan</button></div><pre class="console-output" id="scanOutput" aria-live="polite"><span class="console-placeholder">Output run terbaru akan muncul di sini.</span></pre></article>
+        </section>
+
+        <section class="page-view hidden" data-view="reports">
+          <div class="page-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> HASIL / 03</div><h1>Ruang <span>laporan.</span></h1><p>Pilih riwayat run dan buka seluruh file laporan aktif maupun pasif.</p></div></div>
+          <div class="panel report-panel"><div class="report-toolbar"><div><div class="eyebrow"><span class="eyebrow-line"></span> ARSIP LAPORAN</div><h3>Dokumen temuan</h3></div><div class="toolbar-controls archive-controls"><label class="sr-only" for="reportTarget">Target laporan</label><select id="reportTarget" class="compact-select"><option value="">Pilih target</option></select><label class="sr-only" for="reportRun">Riwayat laporan</label><select id="reportRun" class="compact-select" disabled><option value="">Pilih run</option></select><button class="icon-button" id="loadReports" aria-label="Muat laporan">↻</button></div></div><div class="report-layout"><aside class="report-list" id="reportList"><div class="empty-inline">Pilih target dan run untuk melihat laporan.</div></aside><article class="report-reader"><div class="reader-toolbar"><span class="file-dot"></span><span id="reportFileName">BELUM ADA DOKUMEN</span><button class="quiet-button" id="downloadReport" disabled>Unduh <span>↓</span></button></div><pre class="report-content" id="reportContent"><span class="report-placeholder">Pilih file laporan di sisi kiri untuk membaca isinya.</span></pre></article></div></div>
+        </section>
+
+        <section class="page-view hidden" data-view="logs">
+          <div class="page-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> DIAGNOSTIK / 04</div><h1>Log <span>aktivitas.</span></h1><p>Pilih run dan file untuk membaca log pipeline lengkap, error per stage, atau log toolkit.</p></div><div class="heading-actions archive-controls"><select id="logTarget" class="compact-select"><option value="">Pilih target</option></select><select id="logRun" class="compact-select" disabled><option value="">Pilih run</option></select><button class="button button-secondary" id="loadLogs">↻ Muat log</button></div></div>
+          <div class="panel stage-panel"><div class="panel-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> HASIL PER STAGE</div><h3>Status pipeline</h3></div><span class="stage-count" id="stageCount">0 stage</span></div><div class="stage-table-wrap"><table class="stage-table"><thead><tr><th>STAGE</th><th>STATUS</th><th>CATATAN</th></tr></thead><tbody id="stageRows"><tr><td colspan="3" class="table-empty">Pilih run untuk memuat data stage.</td></tr></tbody></table></div></div>
+          <div class="panel log-panel"><div class="console-head"><div><span class="console-indicator console-indicator-muted"></span><b>FILE LOG</b><small id="logCaption">Pilih target dan run</small></div><div class="archive-controls"><select id="logFile" class="compact-select" disabled><option value="">Pilih file log</option></select><button class="quiet-button" id="downloadLog" disabled>Unduh <span>↓</span></button></div></div><pre class="log-content" id="logContent">Log lengkap ditampilkan sebagai teks aman; kredensial yang dikenali akan disamarkan.</pre></div>
+        </section>
+
+        <section class="page-view hidden" data-view="tools">
+          <div class="page-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> HOST CHECK / 05</div><h1>Inventaris <span>tool.</span></h1><p>Deteksi aplikasi dan dependensi yang tersedia pada mesin lokal.</p></div><button class="button button-secondary" id="reloadTools">↻ Periksa ulang</button></div>
+          <div class="tool-summary panel"><div class="tool-summary-mark">⌘</div><div><div class="eyebrow"><span class="eyebrow-line"></span> TOOL DISCOVERY</div><h3><span id="toolSummaryCount">—</span> terpasang <small>dari <span id="toolSummaryTotal">—</span></small></h3><p>Tool opsional yang tidak ditemukan dapat dilewati pipeline.</p></div><div class="tool-summary-meter"><div class="meter-track"><i id="toolMeter"></i></div><small id="toolPercent">0%</small></div></div>
+          <div class="tool-grid" id="toolGrid"><div class="panel loading-card">Memeriksa tool…</div></div>
+        </section>
+
+        <section class="page-view hidden" data-view="scope">
+          <div class="page-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> ACCESS CONTROL / 06</div><h1>Scope <span>& proxy.</span></h1><p>Daftar target yang Anda setujui dan konfigurasi pool proxy lokal.</p></div></div>
+          <div class="scope-proxy-grid"><article class="panel scope-panel"><div class="panel-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> ALLOWLIST LOKAL</div><h3>Domain dalam scope</h3></div><span class="scope-count" id="scopeCount">0</span></div><p class="panel-intro">Satu apex per baris. Hanya domain yang tercantum persis dapat dipilih untuk scan.</p><div class="scope-list" id="scopeList"><div class="empty-inline">Belum ada domain scope.</div></div><form id="scopeForm" class="scope-add-form"><label class="field-label" for="scopeDomain">Tambah apex domain</label><div class="scope-add-row"><input class="text-input" id="scopeDomain" placeholder="contoh.com" autocomplete="off" required><button class="button button-primary" type="submit">＋ Tambahkan</button></div><label class="mini-consent"><input id="scopeAuthorized" type="checkbox" required><span>Saya mengonfirmasi bahwa domain ini benar-benar diizinkan oleh program bounty.</span></label></form></article>
+            <article class="panel exclusion-panel"><div class="panel-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> DENYLIST LOKAL</div><h3>Pengecualian</h3></div><span class="exclude-mark">−</span></div><p class="panel-intro">Exclusions selalu mengalahkan allowlist, termasuk seluruh subdomain di bawah entry.</p><div class="exclusion-list" id="exclusionList"><div class="empty-inline">Tidak ada pengecualian tercatat.</div></div><div class="file-location"><span>⌁</span><span>state/exclusions.txt</span><b>READ ONLY</b></div></article></div>
+          <article class="panel proxy-panel"><div class="proxy-heading"><div><div class="eyebrow"><span class="eyebrow-line"></span> NETWORK ROUTING</div><h3>Pool proxy <span id="proxyState" class="proxy-state">—</span></h3><p>Proxy tersimpan lokal, izin file owner-only. Kredensial hanya ditampilkan setelah login.</p></div><div class="proxy-meta"><span class="proxy-count-big" id="proxyCountBig">—</span><small>ENDPOINT</small></div></div><div class="proxy-config-row"><div class="proxy-editor"><label class="field-label" for="proxyEntries">Satu endpoint per baris</label><textarea id="proxyEntries" class="proxy-textarea" rows="6" placeholder="http://user:password@proxy.example:3128&#10;socks5://127.0.0.1:1080" spellcheck="false"></textarea><div class="proxy-editor-foot"><span id="proxyFileLabel">state/proxies.txt</span><span>HTTP · HTTPS · SOCKS4 · SOCKS5</span></div></div><div class="proxy-help"><div class="proxy-help-icon">⇄</div><b>Rotasi & cakupan</b><p id="proxyHelpText">Rotasi diatur oleh config pipeline.</p><div class="proxy-warning"><span>!</span><p>DNS dan nmap tidak memakai proxy. Hindari proxy publik gratis untuk traffic sensitif.</p></div><button class="button button-secondary" id="saveProxies">Simpan daftar proxy <span>→</span></button></div></div><div class="panel-bottom-note"><span class="lock-dot"></span> Perubahan menyimpan ulang file proxy yang dikonfigurasi. Periksa kembali sebelum scan.</div></article>
+        </section>
+      </div>
+    </main>
+  </div>
+  <dialog class="confirm-dialog" id="scanDialog"><div class="dialog-mark">⌁</div><div class="eyebrow"><span class="eyebrow-line"></span> KONFIRMASI OPERATOR</div><h2>Pastikan target<br><em>benar-benar in-scope.</em></h2><p id="scanConfirmText">Tinjau detail sebelum scan dimulai.</p><div class="dialog-scope"><span>DOMAIN</span><b id="confirmDomain">—</b></div><div class="dialog-scope"><span>METODE</span><b id="confirmMode">—</b></div><div class="dialog-warning">Scan dapat mengirim traffic ke target. Ikuti kebijakan program, rate limit, dan daftar pengecualian.</div><div class="dialog-actions"><button class="button button-secondary" id="cancelScan">Kembali</button><button class="button button-primary" id="confirmScan">Saya berwenang · Mulai</button></div></dialog>
+  <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+</body>
+</html>

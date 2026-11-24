@@ -10,6 +10,7 @@
 #   bash recon.sh --report [domain]   detail bug dari kedua laporan
 #   bash recon.sh --log [domain]      log scan, ringkasan stage, error
 #   bash recon.sh --tools             tool + toolkit Python yang terpasang
+#   bash recon.sh --web               jalankan dashboard lokal (token dibuat otomatis)
 #   bash recon.sh --setup             pasang/rapikan semua kebutuhan
 #   bash recon.sh                     menu interaktif
 #
@@ -60,6 +61,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --log [domain]        log scan, ringkasan stage, error
   bash recon.sh --failures [domain]   hanya tool/stage yang gagal atau skip
   bash recon.sh --tools               tool + toolkit Python terpasang
+  bash recon.sh --web                 jalankan dashboard lokal (token dibuat otomatis)
   bash recon.sh --telegram            atur token, chat ID & user bot, lalu tes
   bash recon.sh --notify-test         kirim ulang pesan tes ke Telegram
   bash recon.sh --stop-bot            hentikan bot yang sedang jalan
@@ -887,6 +889,7 @@ while (( $# )); do
         --passive)    ACTION="passive" ;;
         --no-passive) NO_PASSIVE=1 ;;
         --tools|--check|-c) ACTION="tools" ;;
+        --web|--dashboard) ACTION="web" ;;
         --telegram)   ACTION="telegram" ;;
         --notify-test) ACTION="notify" ;;
         --stop-bot)   ACTION="stopbot" ;;
@@ -942,6 +945,9 @@ case "$ACTION" in
     tools)
         show_tools
         exit 0
+        ;;
+    web)
+        exec "$BASH_BIN" "$SCRIPT_DIR/web_ui/start.sh"
         ;;
     report)
         show_report_detail "$DOMAIN"

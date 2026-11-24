@@ -680,7 +680,7 @@ write_config() {
 check_syntax() {
     local rc=0 script err
 
-    for script in recon_pro.sh recon.sh setup.sh; do
+    for script in recon_pro.sh recon.sh setup.sh web_ui/start.sh; do
         [[ -f "$SCRIPT_DIR/$script" ]] || continue
         if ! bash -n "$SCRIPT_DIR/$script" 2>/tmp/.recon_syn; then
             err=$(head -n 2 /tmp/.recon_syn | tr '\n' ' ')
@@ -689,13 +689,16 @@ check_syntax() {
         fi
     done
 
-    if [[ -f "$SCRIPT_DIR/recon_pro_bot.py" ]] && have python3; then
-        if ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' \
-            "$SCRIPT_DIR/recon_pro_bot.py" 2>/tmp/.recon_syn; then
-            err=$(tail -n 2 /tmp/.recon_syn | tr '\n' ' ')
-            warn "recon_pro_bot.py: $err"
-            rc=1
-        fi
+    if have python3; then
+        for script in recon_pro_bot.py web_ui/server.py; do
+            [[ -f "$SCRIPT_DIR/$script" ]] || continue
+            if ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' \
+                "$SCRIPT_DIR/$script" 2>/tmp/.recon_syn; then
+                err=$(tail -n 2 /tmp/.recon_syn | tr '\n' ' ')
+                warn "$script: $err"
+                rc=1
+            fi
+        done
     fi
 
     rm -f /tmp/.recon_syn
@@ -745,6 +748,7 @@ printf '  bash recon.sh --passive example.com  hanya toolkit pasif (OSINT)\n'
 printf '  bash recon.sh --report example.com   detail bug yang ketemu\n'
 printf '  bash recon.sh --log example.com      log dan error per stage\n'
 printf '  bash recon.sh --tools                tool + versi\n'
+printf '  bash recon.sh --web                  jalankan dashboard lokal (token otomatis)\n'
 printf '\nLaporan aktif : %s/reports/<domain>/latest-report.md\n' "$RECON_HOME"
 printf 'Laporan pasif : %s/bugbounty-toolkit/reports/\n' "$SCRIPT_DIR"
 printf 'Detail pemasangan: %s\n' "$LOG_FILE"

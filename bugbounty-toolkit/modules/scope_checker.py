@@ -182,7 +182,7 @@ class ScopeChecker:
             self.logger.warning("scope DENY %s — %s", target, reason)
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "decision": status,
+            "decision": "allowed" if allowed else "denied",
             "target": target,
             "reason": reason,
         }

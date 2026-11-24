@@ -9,6 +9,7 @@ proxies.txt
 exclusions.txt
 scope.txt
 extra_scope.txt
+web_token
 *.log
 
 # ---------------------------------------------------------------------------
