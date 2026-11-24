@@ -59,6 +59,8 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --report [domain]     detail bug dari kedua laporan
   bash recon.sh --log [domain]        log scan, ringkasan stage, error
   bash recon.sh --tools               tool + toolkit Python terpasang
+  bash recon.sh --telegram            atur token & chat ID, lalu kirim tes
+  bash recon.sh --notify-test         kirim ulang pesan tes ke Telegram
   bash recon.sh --setup               pasang semua kebutuhan
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
@@ -339,7 +341,115 @@ show_tools() {
     else
         printf '  %-16s %-11s %s\n' "toolkit venv" "missing" "bash setup.sh --python-only"
     fi
+    printf '\n%bTelegram:%b\n' "$BOLD" "$NC"
+    local tg_token tg_chat
+    tg_token=$(conf_value TELEGRAM_TOKEN || true)
+    tg_chat=$(conf_value TELEGRAM_CHAT || true)
+    if [[ -n "$tg_token" && -n "$tg_chat" ]]; then
+        printf '  %-16s %-11s %s\n' "notifier" "ok" "chat ${tg_chat}"
+    else
+        printf '  %-16s %-11s %s\n' "notifier" "off" "bash recon.sh --telegram"
+    fi
+
     printf '\nCek detail (folder, proxy, wordlist, config): bash recon_pro.sh -c\n'
+    return 0
+}
+
+# ---------------------------------------------------------------- telegram ----
+# Reads one value from the pipeline config (KEY|value per line).
+conf_value() {
+    local key="$1"
+    [[ -f "$CONFIG_FILE" ]] || return 1
+    awk -F'|' -v k="$key" '$1 == k { sub(/^[^|]*\|/, ""); print; exit }' "$CONFIG_FILE"
+}
+
+# Writes one KEY|value pair, keeping every other line untouched.
+conf_set() {
+    local key="$1" value="$2" tmp
+    [[ -f "$CONFIG_FILE" ]] || : > "$CONFIG_FILE"
+    mkdir -p -- "$(dirname -- "$CONFIG_FILE")" 2>/dev/null || true
+    tmp=$(mktemp "${CONFIG_FILE}.XXXXXX") || return 1
+    awk -v k="$key" -v v="$value" '
+        BEGIN { seen = 0 }
+        index($0, k "|") == 1 { if (!seen) { print k "|" v; seen = 1 } ; next }
+        { print }
+        END { if (!seen) print k "|" v }
+    ' "$CONFIG_FILE" > "$tmp" && mv -f -- "$tmp" "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+    return 0
+}
+
+# Sends one test message. The token travels through curl's stdin config, never
+# through argv, so it does not show up in the process list.
+telegram_test() {
+    local token="${1:-}" chat="${2:-}" message
+
+    token="${token:-$(conf_value TELEGRAM_TOKEN || true)}"
+    chat="${chat:-$(conf_value TELEGRAM_CHAT || true)}"
+
+    if [[ -z "$token" || -z "$chat" ]]; then
+        fail "Token/chat belum diisi. Jalankan: bash recon.sh --telegram"
+        return 1
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        fail "curl tidak terpasang."
+        return 1
+    fi
+
+    message="recon: notifikasi Telegram aktif ($(date '+%Y-%m-%d %H:%M'))"
+    if curl --silent --show-error --max-time 20 --config - >/dev/null 2>&1 <<EOF
+url = "https://api.telegram.org/bot${token}/sendMessage"
+request = "POST"
+data-urlencode = "chat_id=${chat}"
+data-urlencode = "text=${message}"
+EOF
+    then
+        ok "Pesan uji terkirim ke chat ${chat}."
+        return 0
+    fi
+    fail "Telegram menolak pesan itu. Periksa token (BotFather) dan chat ID (@userinfobot)."
+    return 1
+}
+
+# Interactive, quote-safe replacement for editing the config with sed.
+set_telegram() {
+    local token="" chat="" current_token current_chat
+
+    current_token=$(conf_value TELEGRAM_TOKEN || true)
+    current_chat=$(conf_value TELEGRAM_CHAT || true)
+
+    printf 'Token bot Telegram dari @BotFather (input tidak terlihat): '
+    read -rs token || token=""
+    printf '\n'
+
+    if [[ -z "$token" ]]; then
+        if [[ -n "$current_token" ]]; then
+            printf 'Token tidak diubah.\n'
+            token="$current_token"
+        else
+            fail "Token kosong; dibatalkan."
+            return 1
+        fi
+    elif [[ ! "$token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+        fail "Format token tidak valid (contoh: 123456789:AAF...). Dibatalkan."
+        return 1
+    fi
+
+    printf 'Chat ID numerik%s: ' "${current_chat:+ [$current_chat]}"
+    read -r chat || chat=""
+    chat="${chat// /}"
+    if [[ -z "$chat" ]]; then
+        chat="$current_chat"
+    fi
+    if [[ ! "$chat" =~ ^-?[0-9]+$ ]]; then
+        fail "Chat ID harus angka. Kirim /start ke bot, lalu cek @userinfobot."
+        return 1
+    fi
+
+    conf_set TELEGRAM_TOKEN "$token" || { fail "Gagal menulis config."; return 1; }
+    conf_set TELEGRAM_CHAT "$chat" || { fail "Gagal menulis config."; return 1; }
+    ok "Tersimpan di ${CONFIG_FILE} (izin 600)."
+    telegram_test "$token" "$chat" || true
     return 0
 }
 
@@ -358,6 +468,8 @@ while (( $# )); do
         --passive)    ACTION="passive" ;;
         --no-passive) NO_PASSIVE=1 ;;
         --tools|--check|-c) ACTION="tools" ;;
+        --telegram)   ACTION="telegram" ;;
+        --notify-test) ACTION="notify" ;;
         --no-setup)   NO_SETUP=1 ;;
         --report)
             ACTION="report"
@@ -403,6 +515,14 @@ case "$ACTION" in
         ;;
     log)
         show_log "$DOMAIN"
+        exit $?
+        ;;
+    telegram)
+        set_telegram
+        exit $?
+        ;;
+    notify)
+        telegram_test
         exit $?
         ;;
 esac
