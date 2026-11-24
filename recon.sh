@@ -58,6 +58,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --no-passive <domain> scan penuh saja
   bash recon.sh --report [domain]     detail bug dari kedua laporan
   bash recon.sh --log [domain]        log scan, ringkasan stage, error
+  bash recon.sh --failures [domain]   hanya tool/stage yang gagal atau skip
   bash recon.sh --tools               tool + toolkit Python terpasang
   bash recon.sh --telegram            atur token, chat ID & user bot, lalu tes
   bash recon.sh --notify-test         kirim ulang pesan tes ke Telegram
@@ -624,6 +625,66 @@ proxy_check() {
     return 0
 }
 
+# Shows only what did not work: tools that are not installed, stages that failed
+# or were skipped, and the stderr each stage wrote. Complements --log, which is
+# the full picture.
+show_failures() {
+    local domain="${1:-}" run_dir err_file shown=0 missing=0 bad=0
+
+    domain="${domain:-$(latest_domain)}"
+    if [[ -z "$domain" ]]; then
+        fail "Belum ada run. Jalankan: bash recon.sh example.com"
+        return 1
+    fi
+    run_dir="${RUNS_DIR}/${domain}/latest"
+    if [[ ! -d "$run_dir" ]]; then
+        fail "Belum ada workspace untuk ${domain}."
+        return 1
+    fi
+
+    printf '%b=== YANG GAGAL / SKIP: %s ===%b\n' "${BOLD}${CYAN}" "$domain" "$NC"
+
+    printf '\n--- TOOL TIDAK TERPASANG ---\n'
+    if [[ -s "$run_dir/final/tool_inventory.txt" ]]; then
+        missing=$(grep -c '^MISSING' "$run_dir/final/tool_inventory.txt" 2>/dev/null)
+        missing=${missing:-0}
+        if (( missing > 0 )); then
+            grep '^MISSING' "$run_dir/final/tool_inventory.txt" | sed 's/ (related stage is skipped)//'
+        else
+            printf '_semua tool yang dipakai pipeline terpasang_\n'
+        fi
+    else
+        printf '_tool_inventory.txt tidak ada (run terlalu lama/terputus)_\n'
+    fi
+
+    printf '\n--- STAGE TIDAK "ok" ---\n'
+    if [[ -s "$run_dir/logs/stages.tsv" ]]; then
+        awk -F'\t' '$2 != "ok" { printf "%-12s %-10s %s\n", $1, $2, $3 }' "$run_dir/logs/stages.tsv"
+        bad=$(awk -F'\t' '$2 != "ok"' "$run_dir/logs/stages.tsv" | wc -l | tr -d '[:space:]')
+        (( ${bad:-0} == 0 )) && printf '_semua stage ok_\n'
+    else
+        printf '_stages.tsv tidak ada_\n'
+    fi
+
+    printf '\n--- DETAIL ERROR PER STAGE ---\n'
+    for err_file in "$run_dir"/logs/*.err; do
+        [[ -s "$err_file" ]] || continue
+        printf '\n[%s]\n' "$(basename -- "$err_file")"
+        grep -E '^exit=' "$err_file" 2>/dev/null | tail -n 2 | sed 's/^/  /'
+        tail -n 8 "$err_file" | sed 's/^/  /'
+        shown=$((shown + 1))
+        if (( shown >= 15 )); then
+            printf '\n... sisanya lihat %s/logs/\n' "$run_dir"
+            break
+        fi
+    done
+    (( shown == 0 )) && printf '_tidak ada stderr dari tool mana pun_\n'
+
+    printf '\nLog lengkap : bash recon.sh --log %s\n' "$domain"
+    printf 'Pasang yang kurang: bash setup.sh   (atau bash setup.sh --minimal)\n'
+    return 0
+}
+
 # ---------------------------------------------------------------- arg parsing --
 DOMAIN=""
 ACTION=""
@@ -660,6 +721,13 @@ while (( $# )); do
                 shift
             fi
             ;;
+        --failures|--failed)
+            ACTION="failures"
+            if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
+                DOMAIN="$2"
+                shift
+            fi
+            ;;
         -*)
             fail "Opsi tidak dikenal: $1"
             usage
@@ -690,6 +758,10 @@ case "$ACTION" in
         ;;
     log)
         show_log "$DOMAIN"
+        exit $?
+        ;;
+    failures)
+        show_failures "$DOMAIN"
         exit $?
         ;;
     telegram)

@@ -35,6 +35,7 @@ bash recon.sh --no-passive example.com  # scan aktif saja
 bash recon.sh --report example.com    # detail bug dari kedua laporan
 bash recon.sh --report                # domain terakhir
 bash recon.sh --log example.com       # ringkasan stage + 80 baris log + error per stage
+bash recon.sh --failures example.com  # hanya tool/stage yang gagal atau di-skip
 bash recon.sh --tools                 # tool + versi + status toolkit Python
 bash recon.sh --setup                 # pasang/rapikan semua kebutuhan
 bash recon.sh --no-setup example.com  # jangan pasang apa pun, langsung scan

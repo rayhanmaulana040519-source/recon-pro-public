@@ -36,6 +36,7 @@ KNOWN_COMMANDS = {
     "scope", "stop", "cancel", "status",
     "report", "findings", "finding", "bugs",
     "log", "logs",
+    "failures", "failed",
     "doctor", "tools",
 }
 
@@ -830,7 +831,7 @@ class ReconTelegramBot:
         argument = (match.group(2) or "").strip()
 
         if command in ("start", "help"):
-            self.send(chat_id, "Recon Pro bug-bounty bot\n\n/scan domain.tld — request a scan for an allowlisted apex domain (active pipeline + passive toolkit)\n/passive domain.tld — run only the passive OSINT + header toolkit\n/scope — list approved apex domains\n/scope add domain.tld — request adding an approved domain\n/scope remove domain.tld — request removing a domain\n/stop — request stopping your running scan\n/cancel — cancel pending button confirmations\n/status — show scan status, progress and the proxy pool\n/report [domain.tld] — send the latest report for an allowlisted domain\n/findings [domain.tld] — send the detailed findings (what it is, impact, how to check, fix)\n/log [domain.tld] — send the last scan log, pipeline log and per-stage errors\n/doctor or /tools — check which scanner tools are installed\n\nTanpa /passive pun, /scan sudah menjalankan toolkit pasif di akhir. Perintah harus diawali garis miring (contoh: /scan example.com), bukan scan saja. Tap the action button (for example, Mulai scan or Tambah) or Batal on the bot's message. Buttons expire after 3 minutes. Private chat and an approved Telegram user ID are required; arbitrary shell commands are never accepted.")
+            self.send(chat_id, "Recon Pro bug-bounty bot\n\n/scan domain.tld — request a scan for an allowlisted apex domain (active pipeline + passive toolkit)\n/passive domain.tld — run only the passive OSINT + header toolkit\n/scope — list approved apex domains\n/scope add domain.tld — request adding an approved domain\n/scope remove domain.tld — request removing a domain\n/stop — request stopping your running scan\n/cancel — cancel pending button confirmations\n/status — show scan status, progress and the proxy pool\n/report [domain.tld] — send the latest report for an allowlisted domain\n/findings [domain.tld] — send the detailed findings (what it is, impact, how to check, fix)\n/log [domain.tld] — send the last scan log, pipeline log and per-stage errors\n/failures [domain.tld] — only the tools that are missing and the stages that failed or were skipped\n/doctor or /tools — check which scanner tools are installed\n\nTanpa /passive pun, /scan sudah menjalankan toolkit pasif di akhir. Perintah harus diawali garis miring (contoh: /scan example.com), bukan scan saja. Tap the action button (for example, Mulai scan or Tambah) or Batal on the bot's message. Buttons expire after 3 minutes. Private chat and an approved Telegram user ID are required; arbitrary shell commands are never accepted.")
             return
 
         if command == "scope":
@@ -1090,8 +1091,34 @@ class ReconTelegramBot:
             self.send_chunked(chat_id, "\n".join(parts))
             return
 
-        if command in ("doctor", "tools"):
+        if command in ("failures", "failed"):
+            domain = self._report_domain(argument)
+            if not domain:
+                self.send(chat_id, "Usage: /failures example.com (an allowlisted domain)")
+                return
+            wrapper = self.script.with_name("recon.sh")
+            if not wrapper.is_file():
+                self.send(chat_id, "recon.sh not found next to the bot script.")
+                return
             try:
+                result = subprocess.run(
+                    [self.bash, str(wrapper), "--failures", domain],
+                    cwd=str(self.script.parent),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                self.send(chat_id, "Could not read stage status: {}".format(error))
+                return
+            output = ANSI_ESCAPE.sub("", result.stdout or "").strip()
+            self.send_chunked(chat_id, output or "No output from --failures.")
+            return
+
+        if command in ("doctor", "tools"):            try:
                 result = subprocess.run(
                     [self.bash, str(self.script), "--check"],
                     cwd=str(self.script.parent),

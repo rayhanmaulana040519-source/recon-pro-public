@@ -10,6 +10,7 @@ This companion bot lets an approved user request a full Recon Pro pipeline from 
 - `/report [example.com]` sends the latest Telegram report for a configured target.
 - `/findings [example.com]` sends the detailed findings from the Markdown report: what each bug is, its impact, the manual check and the fix.
 - `/log [example.com]` sends the last scan log, the pipeline log tail and the per-stage results, so a failed stage is visible from the chat.
+- `/failures [example.com]` sends only what went wrong: tools that are not installed, stages that failed or were skipped, and the stderr each one wrote.
 - `/tools` or `/doctor` lists which scanner tools are installed on the scan host.
 - `/scope` lists the local scope allowlist; `/scope add domain.tld` and `/scope remove domain.tld` manage it from Telegram with inline confirmation buttons.
 - The full pipeline also uses optional WhatWeb fingerprinting in single-request mode, capped at 100 in-scope URLs per scan.
