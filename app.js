@@ -494,8 +494,6 @@
     window.setInterval(() => { if (!document.hidden) paint(); }, 95);
   }
 
-  function bindEvents() {
-
   function archiveUrl(endpoint, target, kind, collection = "", file = "") {
     const params = new URLSearchParams({ target, kind });
     if (collection) params.set("collection", collection);
