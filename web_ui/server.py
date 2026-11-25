@@ -413,9 +413,9 @@ def _tool_inventory() -> list[dict[str, Any]]:
 ARSENAL_CATALOG: tuple[dict[str, str], ...] = (
     {
         "id": "skipfish", "bin": "skipfish", "name": "Skipfish", "category": "crawl",
-        "summary": "Crawler aktif dengan dictionary bawaan: memetakan direktori, file, dan form.",
-        "install": "sudo apt-get install -y skipfish",
-        "usage": "skipfish -o /tmp/skipfish-{{TARGET}} -W /usr/share/skipfish/dictionaries/complete.wl https://{{TARGET}}/",
+        "summary": "Crawler aktif 2.10b dengan dictionary bawaan: memetakan direktori, file, dan form.",
+        "install": "git clone https://github.com/spinkham/skipfish /opt/skipfish && make -C /opt/skipfish && sudo ln -sf /opt/skipfish/skipfish /usr/local/bin/skipfish",
+        "usage": "touch /tmp/skipfish-new.wl && skipfish -o /tmp/skipfish-{{TARGET}} -S /usr/local/share/skipfish/dictionaries/complete.wl -W /tmp/skipfish-new.wl -l 20 -r 2000 https://{{TARGET}}/",
     },
     {
         "id": "gobuster", "bin": "gobuster", "name": "Gobuster", "category": "crawl",
@@ -476,8 +476,7 @@ ARSENAL_CATALOG: tuple[dict[str, str], ...] = (
         "summary": "Pemeriksaan versi plugin/tema WordPress yang rentan.",
         "install": "sudo gem install wpscan",
         "usage": "wpscan --url https://{{TARGET}}/ --enumerate vp,vt --random-user-agent --request-timeout 15 --no-update",
-    },
-    {
+    },    {
         "id": "commix", "bin": "commix", "name": "Commix", "category": "audit",
         "summary": "Uji command injection non-destruktif pada parameter yang diizinkan.",
         "install": "git clone https://github.com/commixproject/commix /opt/commix && sudo ln -sf /opt/commix/commix.py /usr/local/bin/commix",

@@ -406,6 +406,56 @@ install_apt_package() {
     esac
 }
 
+install_skipfish() {
+    if have skipfish; then
+        ok "skipfish"
+        return 0
+    fi
+    if install_apt_package skipfish && have skipfish; then
+        ok "skipfish"
+        return 0
+    fi
+    # Ubuntu dropped the package; Debian/Kali still ship it. Build the official
+    # 2.10b source in that case (needs openssl, zlib, idn and pcre headers).
+    if ! have git || ! have make || ! have cc; then
+        info "Memasang prasyarat build skipfish ..."
+        install_apt_package git || true
+        install_apt_package build-essential || true
+    fi
+    local pkg
+    for pkg in libssl-dev zlib1g-dev libidn11-dev libidn-dev libpcre3-dev; do
+        install_apt_package "$pkg" || true
+    done
+    if ! have git || ! have make; then
+        warn "skipfish dilewati: git/make belum tersedia"
+        return 0
+    fi
+    local src="/opt/skipfish" build_log="${STATE_DIR}/skipfish-build.log"
+    if [[ ! -d "${src}/.git" ]]; then
+        info "Mengunduh sumber skipfish ..."
+        if ! run_root git clone --depth 1 https://github.com/spinkham/skipfish "$src" >>"$LOG_FILE" 2>&1; then
+            warn "skipfish: unduhan sumber gagal; lihat ${LOG_FILE}"
+            return 0
+        fi
+    fi
+    info "Membangun skipfish dari sumber (2.10b) ..."
+    if run_root make -C "$src" >"$build_log" 2>&1; then
+        run_root ln -sf "${src}/skipfish" /usr/local/bin/skipfish >>"$LOG_FILE" 2>&1 || true
+        run_root mkdir -p /usr/local/share/skipfish >>"$LOG_FILE" 2>&1 || true
+        if [[ -d "${src}/dictionaries" ]]; then
+            run_root ln -sfn "${src}/dictionaries" /usr/local/share/skipfish/dictionaries >>"$LOG_FILE" 2>&1 || true
+        fi
+        if have skipfish; then
+            ok "skipfish (build 2.10b)"
+            return 0
+        fi
+    fi
+    warn "skipfish gagal dikompilasi; ringkasan:"
+    tail -n 6 "$build_log" 2>/dev/null | while IFS= read -r line; do printf '    %s\n' "$line"; done
+    printf '    Log build: %s\n' "$build_log"
+    return 0
+}
+
 install_pipx_tool() {
     local tool="$1"
     if have "$tool"; then
@@ -511,16 +561,18 @@ install_wpscan() {
     fi
     # wpscan needs to compile native extensions (nokogiri, ethon, ffi); without
     # these headers `gem install` fails on a minimal VPS.
-    local dep
-    for dep in build-essential pkg-config libcurl4-openssl-dev libxml2-dev libxslt1-dev zlib1g-dev libsqlite3-dev; do
+    local dep gem_log="${STATE_DIR}/wpscan-gem.log"
+    for dep in build-essential pkg-config libcurl4-openssl-dev libxml2-dev libxslt1-dev zlib1g-dev libsqlite3-dev libffi-dev libyaml-dev; do
         install_apt_package "$dep" || true
     done
     info "Memasang wpscan lewat gem (Ruby, bisa beberapa menit) ..."
-    if run_root gem install --no-document wpscan >>"$LOG_FILE" 2>&1 && have wpscan; then
+    if run_root gem install --no-document wpscan >"$gem_log" 2>&1 && have wpscan; then
         ok "wpscan"
-    else
-        warn "wpscan gagal dipasang; periksa bagian terakhir ${LOG_FILE}"
+        return 0
     fi
+    warn "wpscan gagal dipasang; ringkasan error:"
+    tail -n 6 "$gem_log" 2>/dev/null | while IFS= read -r line; do printf '    %s\n' "$line"; done
+    printf '    Log lengkap: %s\n' "$gem_log"
     return 0
 }
 
@@ -564,7 +616,7 @@ install_arsenal_tools() {
     fi
 
     local pkg bin ready=0 missing=""
-    local -a apt_packages=(skipfish gobuster dirsearch)
+    local -a apt_packages=(gobuster dirsearch)
     local -a arsenal_bins=(skipfish gobuster dirsearch feroxbuster arjun wpscan commix)
     case "$OS:$DISTRO" in
         linux:ubuntu|linux:debian|linux:linuxmint|linux:pop|linux:elementary|linux:kali)
@@ -575,8 +627,6 @@ install_arsenal_tools() {
                     ok "$pkg"
                 elif run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" >>"$LOG_FILE" 2>&1; then
                     ok "$pkg"
-                elif [[ "$pkg" == "skipfish" ]]; then
-                    warn "skipfish tidak ada di repo distro ini (umumnya hanya Debian lama atau Kali); pakai gobuster/dirsearch/feroxbuster sebagai pengganti."
                 else
                     warn "$pkg tidak tersedia lewat apt (opsional, dilewati)"
                 fi
@@ -587,6 +637,7 @@ install_arsenal_tools() {
             ;;
     esac
 
+    install_skipfish
     install_pipx_tool arjun
     install_pipx_tool dirsearch
     install_wpscan

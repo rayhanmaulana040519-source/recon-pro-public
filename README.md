@@ -73,7 +73,16 @@ Tool yang tetap gagal dipasang hanya diberi peringatan (tidak menghentikan
 setup), dan baris terakhir mencetak `Arsenal terpasang: n/7` beserta daftar tool
 yang belum ada dan lokasi log. Tool hasil pipx ditautkan ke `/usr/local/bin`
 supaya terlihat dari shell mana pun, dan dashboard juga mencari `~/.local/bin`
-saat mendeteksi tool. Recon Pro **tidak** menjalankan tool
+saat mendeteksi tool.
+
+**Skipfish** sudah tidak ada di arsip Ubuntu, jadi bila apt tidak
+menyediakannya setup membangun sumber resmi 2.10b ke `/opt/skipfish` (butuh
+`libssl-dev`, `zlib1g-dev`, libidn, dan `libpcre3-dev`) lalu menautkan binary ke
+`/usr/local/bin/skipfish` serta dictionary-nya ke
+`/usr/local/share/skipfish/dictionaries`. Bila kompilasi atau `gem install`
+wpscan gagal, setup mencetak enam baris terakhir penyebabnya langsung di
+terminal dan menyimpan log penuh di `state/skipfish-build.log` atau
+`state/wpscan-gem.log`. Recon Pro **tidak** menjalankan tool
 arsenal secara otomatis — semuanya dipicu manual dari dashboard atau terminal.
 
 Daftar yang sama terlihat di tab **Arsenal** dashboard, lengkap dengan status
