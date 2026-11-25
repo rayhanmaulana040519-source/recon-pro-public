@@ -12,7 +12,7 @@ Use this when you own a domain managed by Cloudflare and have already added a **
 
 - Linux VPS with systemd, Bash, Git, and Python 3.11+.
 - `cloudflared` installed from Cloudflare's official instructions: <https://developers.cloudflare.com/tunnel/downloads/>.
-- The checkout's `origin` must be `https://github.com/rayhanmaulana040519-source/recon-pro.git`, on branch `main`, with working GitHub read access for the Linux account that owns the checkout.
+- The checkout's `origin` must be either `https://github.com/rayhanmaulana040519-source/recon-pro.git` or `https://github.com/rayhanmaulana040519-source/recon-pro-public.git`, on branch `main`, with working GitHub read access for the Linux account that owns the checkout.
 - The MCP updater runs as the checkout owner. Running it as root is discouraged; if the checkout is owned by root, the installer warns you.
 - A named Cloudflare Tunnel and Published application hostname already configured in Cloudflare Zero Trust. If the host does not already have an active `cloudflared.service`, have the tunnel's connector token available in the Cloudflare dashboard. Enter it only at the hidden prompt in the VPS terminal.
 

@@ -18,7 +18,10 @@ from typing import Any
 from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
-EXPECTED_ORIGIN = "https://github.com/rayhanmaulana040519-source/recon-pro.git"
+EXPECTED_ORIGINS = {
+    "https://github.com/rayhanmaulana040519-source/recon-pro.git",
+    "https://github.com/rayhanmaulana040519-source/recon-pro-public.git",
+}
 ROOT = Path(os.environ.get("RECON_PRO_ROOT", Path(__file__).resolve().parents[1])).resolve()
 API_KEY = os.environ.get("RECON_MCP_API_KEY", "")
 MAX_OUTPUT = 12000
@@ -89,7 +92,7 @@ def _validate_checkout() -> str | None:
         return "Update ditolak: branch main harus melacak origin/main."
 
     origin = _git("remote", "get-url", "origin")
-    if origin.returncode != 0 or origin.stdout.strip() != EXPECTED_ORIGIN:
+    if origin.returncode != 0 or origin.stdout.strip() not in EXPECTED_ORIGINS:
         return "Update ditolak: URL origin tidak cocok dengan repo Recon Pro yang diizinkan."
 
     status = _git("status", "--porcelain", "--untracked-files=all")
