@@ -4,7 +4,7 @@
   const TOKEN_KEY = "reconpro-local-session";
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
-  const state = { token: "", scope: [], targets: [], reports: [], selectedReport: null, selectedLog: null, outputSeq: 0, scanId: null, scanRunning: false, shellSeq: 0, shellId: null, shellRunning: false, shellEnabled: false, timer: null, reportLoadSerial: 0, logLoadSerial: 0 };
+  const state = { token: "", scope: [], targets: [], reports: [], selectedReport: null, selectedLog: null, outputSeq: 0, scanId: null, scanRunning: false, shellSeq: 0, shellId: null, shellRunning: false, shellEnabled: false, timer: null, reportLoadSerial: 0, logLoadSerial: 0, arsenal: [], arsenalFilter: "all", clock: null, boot: null };
   const loginScreen = $("#loginScreen");
   const appShell = $("#appShell");
   const loginError = $("#loginError");
@@ -77,8 +77,15 @@
     const valid = ["overview", "scan", "reports", "logs", "tools", "terminal", "scope"].includes(page) ? page : "overview";
     $$(".page-view").forEach((item) => item.classList.toggle("hidden", item.dataset.view !== valid));
     $$(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.page === valid));
-    const names = { overview: "IKHTISAR", scan: "PEMINDAIAN", reports: "LAPORAN", logs: "LOG AKTIVITAS", tools: "INVENTARIS TOOL", terminal: "TERMINAL VPS", scope: "SCOPE & PROXY" };
+    const names = { overview: "IKHTISAR", scan: "PEMINDAIAN", reports: "LAPORAN", logs: "LOG AKTIVITAS", tools: "ARSENAL", terminal: "TERMINAL VPS", scope: "SCOPE & PROXY" };
     text($("#pageCrumb"), names[valid]);
+    const view = document.querySelector(`[data-view="${valid}"]`);
+    const heading = view ? view.querySelector("h1") : null;
+    if (heading) {
+      heading.classList.remove("glitch-hit");
+      void heading.offsetWidth;
+      heading.classList.add("glitch-hit");
+    }
     history.replaceState(null, "", `#${valid}`);
     if (valid === "scope") { loadScope(); loadProxies(); }
     if (valid === "tools") loadTools();
@@ -209,6 +216,8 @@
       state.scope = data.domains || [];
       renderScope(data);
       fillSelect($("#scanTarget"), state.scope, state.scope.length ? "Pilih domain scope…" : "Tambahkan domain scope dahulu");
+      fillSelect($("#arsenalTarget"), state.scope, state.scope.length ? "Pilih domain scope…" : "Belum ada domain scope");
+      if (state.arsenal.length) renderArsenal();
     } catch (error) { toast(error.message, "error"); }
   }
 
@@ -249,6 +258,8 @@
       state.scope = data.domains || [];
       renderScope(data);
       fillSelect($("#scanTarget"), state.scope, state.scope.length ? "Pilih domain scope…" : "Tambahkan domain scope dahulu");
+      fillSelect($("#arsenalTarget"), state.scope, state.scope.length ? "Pilih domain scope…" : "Belum ada domain scope");
+      if (state.arsenal.length) renderArsenal();
       toast(action === "add" ? `${domain} ditambahkan ke scope.` : `${domain} dihapus dari scope.`, "success");
       await loadStatus();
     } catch (error) { toast(error.message, "error"); }
@@ -269,7 +280,7 @@
 
   async function loadTools() {
     try {
-      const data = await request("/api/tools");
+      const [data, arsenal] = await Promise.all([request("/api/tools"), request("/api/arsenal")]);
       text($("#toolSummaryCount"), data.installed);
       text($("#toolSummaryTotal"), data.total);
       const percent = data.total ? Math.round((data.installed / data.total) * 100) : 0;
@@ -296,8 +307,194 @@
         });
         grid.appendChild(card);
       });
+      state.arsenal = arsenal.items || [];
+      text($("#arsenalCount"), `${arsenal.installed}/${arsenal.total}`);
+      fillSelect($("#arsenalTarget"), state.scope, state.scope.length ? "Pilih domain scope…" : "Belum ada domain scope");
+      renderArsenal();
     } catch (error) { toast(error.message, "error"); }
   }
+
+  const ARSENAL_LABELS = { crawl: "CRAWL", audit: "AUDIT", param: "PARAMETER", recon: "RECON", port: "PORT/TLS" };
+
+  function arsenalTarget() {
+    const node = $("#arsenalTarget");
+    return node ? node.value.trim() : "";
+  }
+
+  async function copyText(value, description) {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      toast(`${description} disalin ke clipboard.`, "success");
+    } catch (_error) {
+      toast("Browser menolak clipboard. Salin manual dari kartu perintah.", "error");
+    }
+  }
+
+  function sendToTerminal(template) {
+    const target = arsenalTarget();
+    if (!target) { toast("Pilih target scope pada bilah Arsenal lebih dulu.", "error"); return; }
+    const command = String(template || "").replace(/\{\{TARGET\}\}/g, target).trim();
+    if (!command) return;
+    const field = $("#shellCommand");
+    if (!field) return;
+    field.value = command;
+    goto("terminal");
+    toast("Perintah ditempel ke terminal. Periksa dulu sebelum dijalankan.", "success");
+    window.setTimeout(() => field.focus(), 140);
+  }
+
+  function arsenalCode(label, display) {
+    const box = document.createElement("div"); box.className = "arsenal-code";
+    const head = document.createElement("div"); head.className = "arsenal-code-head";
+    const tag = document.createElement("span"); tag.className = "arsenal-code-label"; tag.textContent = label;
+    const copy = document.createElement("button"); copy.type = "button"; copy.className = "arsenal-copy"; copy.textContent = "SALIN";
+    copy.addEventListener("click", () => copyText(display, label === "PASANG" ? "Perintah pasang" : "Perintah uji"));
+    head.append(tag, copy);
+    const code = document.createElement("code"); code.textContent = display;
+    box.append(head, code);
+    return box;
+  }
+
+  function renderArsenal() {
+    const chips = $("#arsenalChips");
+    const grid = $("#arsenalGrid");
+    if (!chips || !grid) return;
+    const items = state.arsenal || [];
+    chips.replaceChildren();
+    const categories = [];
+    items.forEach((item) => { if (!categories.includes(item.category)) categories.push(item.category); });
+    const entries = [["all", `SEMUA · ${items.length}`]];
+    categories.forEach((category) => {
+      const count = items.filter((item) => item.category === category).length;
+      entries.push([category, `${ARSENAL_LABELS[category] || category.toUpperCase()} · ${count}`]);
+    });
+    entries.forEach(([value, label]) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = `arsenal-chip${state.arsenalFilter === value ? " active" : ""}`;
+      chip.textContent = label;
+      chip.addEventListener("click", () => { state.arsenalFilter = value; renderArsenal(); });
+      chips.appendChild(chip);
+    });
+    text($("#arsenalFilterLabel"), state.arsenalFilter === "all" ? "SEMUA" : (ARSENAL_LABELS[state.arsenalFilter] || state.arsenalFilter.toUpperCase()));
+    const target = arsenalTarget() || "{{TARGET}}";
+    const visible = items.filter((item) => state.arsenalFilter === "all" || item.category === state.arsenalFilter);
+    grid.replaceChildren();
+    if (!visible.length) {
+      const empty = document.createElement("div"); empty.className = "empty-inline"; empty.textContent = "Katalog arsenal belum dimuat dari backend lokal.";
+      grid.appendChild(empty);
+      return;
+    }
+    visible.forEach((item) => {
+      const card = document.createElement("article");
+      card.className = "arsenal-card";
+      card.dataset.state = item.installed ? "ready" : "missing";
+      const head = document.createElement("header");
+      const category = document.createElement("span"); category.className = "arsenal-cat"; category.textContent = ARSENAL_LABELS[item.category] || item.category;
+      const name = document.createElement("h4"); name.textContent = item.name;
+      const status = document.createElement("span"); status.className = "arsenal-state"; status.textContent = item.installed ? "READY" : "MISSING";
+      head.append(category, name, status);
+      const summary = document.createElement("p"); summary.textContent = item.summary;
+      card.append(head, summary);
+      card.appendChild(arsenalCode("PASANG", item.install || "—"));
+      card.appendChild(arsenalCode("JALANKAN", String(item.usage || "").replace(/\{\{TARGET\}\}/g, target)));
+      const send = document.createElement("button");
+      send.type = "button"; send.className = "arsenal-send"; send.textContent = "Kirim ke terminal →";
+      send.addEventListener("click", () => sendToTerminal(item.usage));
+      card.appendChild(send);
+      grid.appendChild(card);
+    });
+  }
+
+  function startClock() {
+    const node = $("#opClock");
+    if (!node) return;
+    const paint = () => {
+      node.textContent = new Date().toLocaleTimeString("en-GB", { hour12: false });
+    };
+    paint();
+    if (state.clock) window.clearInterval(state.clock);
+    state.clock = window.setInterval(paint, 1000);
+  }
+
+  const TICKER_LINES = [
+    "// exclusion selalu menang atas allowlist — periksa sebelum setiap run",
+    "// rotasi proxy berlaku per stage; DNS dan nmap tetap langsung dari host",
+    "// temuan hanya dicatat confirmed bila ada dua sinyal independen",
+    "// semua output tetap tersimpan di mesin ini, tidak pernah di cloud",
+    "// jangan menaikkan rate di luar batas yang diizinkan program bounty",
+  ];
+
+  function startTicker() {
+    const node = $("#opTickerText");
+    if (!node) return;
+    let index = 0;
+    const paint = () => {
+      node.textContent = TICKER_LINES[index % TICKER_LINES.length];
+      index += 1;
+    };
+    paint();
+    window.setInterval(paint, 7000);
+  }
+
+  function startBootLog() {
+    const node = $("#bootLog");
+    if (!node) return;
+    const lines = [
+      "[ 0.001 ] mount //blacksite .......... ok",
+      "[ 0.284 ] scope guard ................ armed",
+      "[ 0.612 ] exclusion list ............. loaded",
+      "[ 0.905 ] proxy mesh ................. standby",
+      "[ 1.104 ] awaiting operator token _",
+    ];
+    node.textContent = "";
+    let index = 0;
+    if (state.boot) window.clearInterval(state.boot);
+    state.boot = window.setInterval(() => {
+      if (index >= lines.length) { window.clearInterval(state.boot); state.boot = null; return; }
+      node.textContent = `${node.textContent}${lines[index]}\n`;
+      index += 1;
+    }, 260);
+  }
+
+  function startMatrix() {
+    const canvas = $("#matrixCanvas");
+    if (!canvas || typeof canvas.getContext !== "function") return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const glyphs = "01ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉ#$%&@!?<>/\\|=+*";
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let step = 16;
+    let drops = [];
+    const resize = () => {
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.max(1, Math.floor(window.innerWidth * ratio));
+      canvas.height = Math.max(1, Math.floor(window.innerHeight * ratio));
+      step = 16 * ratio;
+      const columns = Math.max(1, Math.ceil(canvas.width / step));
+      drops = Array.from({ length: columns }, () => Math.random() * -40);
+    };
+    const paint = () => {
+      context.fillStyle = "rgba(3, 6, 3, 0.14)";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.font = `${Math.round(step)}px ui-monospace, monospace`;
+      for (let index = 0; index < drops.length; index += 1) {
+        const glyph = glyphs.charAt(Math.floor(Math.random() * glyphs.length));
+        const y = drops[index] * step;
+        context.fillStyle = Math.random() > 0.985 ? "#e6ffe0" : "#39ff14";
+        context.fillText(glyph, index * step, y);
+        drops[index] = y > canvas.height ? 0 : drops[index] + 1;
+      }
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    paint();
+    if (reduced.matches) return;
+    window.setInterval(() => { if (!document.hidden) paint(); }, 95);
+  }
+
+  function bindEvents() {
 
   function archiveUrl(endpoint, target, kind, collection = "", file = "") {
     const params = new URLSearchParams({ target, kind });
@@ -680,6 +877,15 @@
     $("#downloadLog").addEventListener("click", downloadLog);
     $("#loadLogs").addEventListener("click", loadLogs);
     $("#reloadTools").addEventListener("click", loadTools);
+    $("#arsenalTarget").addEventListener("change", renderArsenal);
+    document.addEventListener("keydown", (event) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const tag = (event.target.tagName || "").toLowerCase();
+      if (["input", "textarea", "select"].includes(tag) || appShell.classList.contains("hidden")) return;
+      const order = ["overview", "scan", "reports", "logs", "tools", "terminal", "scope"];
+      const index = Number(event.key) - 1;
+      if (Number.isInteger(index) && index >= 0 && index < order.length) goto(order[index]);
+    });
     $("#saveProxies").addEventListener("click", saveProxies);
     $("#scopeForm").addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -692,6 +898,10 @@
   }
 
   bindEvents();
+  startClock();
+  startMatrix();
+  startTicker();
+  startBootLog();
   if (previewHost) showLogin();
   else {
     const saved = sessionStorage.getItem(TOKEN_KEY);

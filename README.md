@@ -54,9 +54,24 @@ bash setup.sh --minimal              # tool inti saja (lebih cepat)
 bash setup.sh --with-x8              # sekalian pasang x8 (cargo, lama)
 bash setup.sh --web-audit-only       # sqlmap, wafw00f, whatweb, nikto saja
 bash setup.sh --with-web-audit       # tambahkan tool audit web ke setup biasa
+bash setup.sh --with-arsenal         # tambah skipfish, gobuster, dirsearch, feroxbuster, arjun, wpscan, commix
+bash setup.sh --arsenal-only         # hanya paket arsenal di atas
 bash setup.sh --python-only          # hanya venv + dependensi toolkit Python
 bash setup.sh --no-python            # tanpa toolkit Python
 ```
+
+### Paket arsenal opsional
+
+`--with-arsenal` menambah tool pendamping di luar pipeline inti: **Skipfish**
+(crawler + pemetaan direktori), **Gobuster**, **Feroxbuster**, **dirsearch**
+(content discovery), **Arjun** (parameter), **WPScan** (WordPress), dan
+**Commix** (command injection). Paket ini dipasang lewat apt bila tersedia, lalu
+pipx/gem/cargo/git untuk sisanya; tool yang gagal dipasang hanya diberi
+peringatan dan tidak menghentikan setup. Recon Pro **tidak** menjalankan tool
+arsenal secara otomatis — semuanya dipicu manual dari dashboard atau terminal.
+
+Daftar yang sama terlihat di tab **Arsenal** dashboard, lengkap dengan status
+terpasang, perintah pemasangan, dan perintah uji ber-volume rendah per tool.
 
 ### Paket audit web opsional
 
@@ -251,6 +266,7 @@ Alias `bash recon.sh --dashboard` dan launcher langsung `bash web_ui/start.sh` j
 - Proxy dapat dikelola dari halaman Scope & Proxy. Kredensial tidak dikembalikan pada daftar ringkas, file disimpan dengan izin owner-only, dan log yang ditampilkan menyamarkan pola kredensial yang dikenal. DNS dan nmap tetap tidak melalui proxy.
 - Server memakai Python standard library saja. Kebutuhan Recon Pro (Bash, scanner dan dependensi toolkit pasif) tetap harus dipasang di host terlebih dahulu.
 - Halaman **Terminal VPS** menjalankan perintah Bash yang diketik operator dan menampilkan output live; direktori kerja dapat dipilih (default `/`, seluruh filesystem dapat diakses sesuai hak akun dashboard). Aktifkan secara eksplisit dengan `RECON_WEB_ENABLE_SHELL=1 bash recon.sh --web`. Terminal hanya tersedia saat bind ke loopback, memakai token dashboard, hanya menjalankan satu perintah sekaligus, dan tidak menerima stdin/TTY interaktif; pilihan direktori berlaku pada sesi browser, sedangkan `cd` di dalam command hanya berlaku untuk command itu. Shell memiliki hak akun Linux dashboard (termasuk root) serta melewati allowlist scope UI; jangan pernah mengekspos dashboard ke internet dan gunakan hanya pada aset yang berizin. Scan dashboard dan command shell saling mengunci agar tidak berjalan bersamaan.
+- Tab **Arsenal** memuat katalog tool beserta status terpasang, perintah pemasangan, dan perintah uji ber-volume rendah: skipfish, gobuster, feroxbuster, dirsearch, ffuf, nuclei, nikto, whatweb, wafw00f, sqlmap, wpscan, commix, dalfox, arjun, x8, subfinder, amass, chaos, dnsx, httpx, katana, gau, tlsx, naabu, dan nmap. Domain scope terpilih disisipkan ke placeholder `{{TARGET}}`. Tombol **Kirim ke terminal** hanya mengisi kolom perintah pada tab Terminal VPS — operator tetap meninjau dan mengonfirmasi sebelum menjalankan. Katalog bersifat baca-saja melalui `GET /api/arsenal`. Antarmuka memakai tema terminal gelap (scanline CRT, matrix rain, judul glitch, jam operasi) yang animasinya otomatis berhenti bila sistem meminta `prefers-reduced-motion`.
 - Tab **Laporan** memungkinkan pemilihan target, riwayat run, lalu setiap file laporan final; laporan pasif Markdown/JSON historis juga tersedia. Tab **Log aktivitas** menampilkan file pipeline dan semua error per stage pada run terpilih. `toolkit.log` beserta rotasinya adalah log global toolkit pasif, bukan log per-run.
 - Opsional: koneksi MCP updater VPS hanya menyediakan satu aksi tetap untuk `git pull` dan self-test; tidak menyediakan shell. Lihat [panduan MCP updater](vps_mcp/README.md) untuk Cloudflare named tunnel yang persisten atau Quick Tunnel sementara.
 - Isi dan unduhan file disamarkan untuk pola kredensial yang dikenali. Demi batas memori, isi per file dibatasi 16 MiB; file lebih besar ditandai terpotong.

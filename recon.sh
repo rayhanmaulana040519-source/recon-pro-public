@@ -300,7 +300,7 @@ show_log() {
 }
 
 # ------------------------------------------------------------------- tools ----
-TOOL_CANDIDATES="curl jq subfinder assetfinder amass findomain chaos dnsx httpx tlsx nuclei dalfox whatweb katana waybackurls gau x8 ffuf gf naabu nmap python3"
+TOOL_CANDIDATES="curl jq subfinder assetfinder amass findomain chaos dnsx httpx tlsx nuclei dalfox whatweb katana waybackurls gau x8 ffuf gf naabu nmap python3 skipfish gobuster feroxbuster dirsearch wpscan commix arjun"
 
 tool_version() {
     local tool="$1" flag out

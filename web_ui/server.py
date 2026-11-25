@@ -367,16 +367,21 @@ def _findings_count(domain: str | None) -> int:
 
 def _tool_inventory() -> list[dict[str, Any]]:
     tools = [
-        ("curl", "HTTP client"), ("jq", "JSON utilities"), ("subfinder", "Subdomain discovery"),
-        ("assetfinder", "Subdomain discovery"), ("amass", "Subdomain discovery"),
-        ("findomain", "Subdomain discovery"), ("chaos", "Subdomain discovery"),
-        ("dnsx", "DNS validation"), ("httpx", "HTTP probing"), ("tlsx", "TLS inventory"),
-        ("nuclei", "Template checks"), ("dalfox", "Parameter checks"), ("whatweb", "Technology detection"),
-        ("sqlmap", "Authorized SQL injection testing"), ("wafw00f", "WAF identification"),
-        ("nikto", "Authorized web server checks"),
+        ("curl", "HTTP client"), ("jq", "JSON utilities"), ("python3", "Passive toolkit / dashboard"),
+        ("subfinder", "Subdomain discovery"), ("assetfinder", "Subdomain discovery"),
+        ("amass", "Subdomain discovery"), ("findomain", "Subdomain discovery"),
+        ("chaos", "Subdomain discovery"), ("dnsx", "DNS validation"),
+        ("httpx", "HTTP probing"), ("tlsx", "TLS inventory"),
         ("katana", "URL collection"), ("waybackurls", "URL collection"), ("gau", "URL collection"),
-        ("x8", "Parameter discovery"), ("ffuf", "Content discovery"), ("gf", "Pattern filtering"),
-        ("naabu", "Port discovery"), ("nmap", "Port inventory"), ("python3", "Passive toolkit / dashboard"),
+        ("gf", "Pattern filtering"), ("x8", "Parameter discovery"), ("arjun", "Parameter discovery"),
+        ("ffuf", "Content discovery"), ("gobuster", "Content discovery"),
+        ("feroxbuster", "Content discovery"), ("dirsearch", "Content discovery"),
+        ("skipfish", "Authorized crawl and directory mapping"),
+        ("nuclei", "Template checks"), ("dalfox", "Parameter checks"),
+        ("whatweb", "Technology detection"), ("wafw00f", "WAF identification"),
+        ("nikto", "Authorized web server checks"), ("sqlmap", "Authorized SQL injection testing"),
+        ("wpscan", "Authorized WordPress checks"), ("commix", "Authorized command injection testing"),
+        ("naabu", "Port discovery"), ("nmap", "Port inventory"),
     ]
     result = [{"name": name, "group": group, "installed": shutil.which(name) is not None} for name, group in tools]
     for module, label in (("yaml", "PyYAML"), ("requests", "Requests"), ("dns", "dnspython")):
@@ -386,6 +391,176 @@ def _tool_inventory() -> list[dict[str, Any]]:
             installed = False
         result.append({"name": label, "group": "Passive toolkit", "installed": installed})
     return result
+
+
+# Read-only catalogue shown on the dashboard's Arsenal page. Every command is a
+# low-volume starting point for an asset that is explicitly in scope; the
+# dashboard never runs them on its own.
+ARSENAL_CATALOG: tuple[dict[str, str], ...] = (
+    {
+        "id": "skipfish", "bin": "skipfish", "name": "Skipfish", "category": "crawl",
+        "summary": "Crawler aktif dengan dictionary bawaan: memetakan direktori, file, dan form.",
+        "install": "sudo apt-get install -y skipfish",
+        "usage": "skipfish -o /tmp/skipfish-{{TARGET}} -W /usr/share/skipfish/dictionaries/complete.wl https://{{TARGET}}/",
+    },
+    {
+        "id": "gobuster", "bin": "gobuster", "name": "Gobuster", "category": "crawl",
+        "summary": "Brute-force direktori dan file dengan wordlist, cepat dan hemat memori.",
+        "install": "sudo apt-get install -y gobuster",
+        "usage": "gobuster dir -u https://{{TARGET}}/ -w /usr/share/wordlists/dirb/common.txt -t 20 --timeout 10s",
+    },
+    {
+        "id": "feroxbuster", "bin": "feroxbuster", "name": "Feroxbuster", "category": "crawl",
+        "summary": "Content discovery rekursif berbasis Rust dengan batas waktu per run.",
+        "install": "cargo install feroxbuster",
+        "usage": "feroxbuster -u https://{{TARGET}}/ -w /usr/share/seclists/Discovery/Web-Content/common.txt -t 20 -d 2 --time-limit 10m",
+    },
+    {
+        "id": "dirsearch", "bin": "dirsearch", "name": "dirsearch", "category": "crawl",
+        "summary": "Pemetaan path dengan ekstensi umum dan wordlist bawaan.",
+        "install": "pipx install dirsearch",
+        "usage": "dirsearch -u https://{{TARGET}}/ -t 20 --max-time 10",
+    },
+    {
+        "id": "ffuf", "bin": "ffuf", "name": "ffuf", "category": "crawl",
+        "summary": "Fuzzer HTTP serba bisa untuk path, host, dan parameter.",
+        "install": "go install github.com/ffuf/ffuf/v2@latest",
+        "usage": "ffuf -w /usr/share/seclists/Discovery/Web-Content/common.txt -u https://{{TARGET}}/FUZZ -mc 200,204,301,302,403 -rate 40 -t 10",
+    },
+    {
+        "id": "nuclei", "bin": "nuclei", "name": "Nuclei", "category": "audit",
+        "summary": "Pemeriksaan berbasis template untuk misconfig, exposure, dan CVE.",
+        "install": "go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
+        "usage": "nuclei -u https://{{TARGET}}/ -as -duc -rl 30 -c 10 -severity low,medium,high,critical",
+    },
+    {
+        "id": "nikto", "bin": "nikto", "name": "Nikto", "category": "audit",
+        "summary": "Pemeriksaan konfigurasi web server dan file berbahaya yang umum.",
+        "install": "sudo apt-get install -y nikto",
+        "usage": "nikto -host https://{{TARGET}}/ -nointeractive -maxtime 300",
+    },
+    {
+        "id": "whatweb", "bin": "whatweb", "name": "WhatWeb", "category": "audit",
+        "summary": "Fingerprinting teknologi pada mode satu request per host.",
+        "install": "sudo apt-get install -y whatweb",
+        "usage": "whatweb --aggression=1 --no-errors https://{{TARGET}}/",
+    },
+    {
+        "id": "wafw00f", "bin": "wafw00f", "name": "WAFW00F", "category": "audit",
+        "summary": "Identifikasi WAF dan produk proteksi sebelum menguji lebih jauh.",
+        "install": "pipx install wafw00f",
+        "usage": "wafw00f https://{{TARGET}}/ -a",
+    },
+    {
+        "id": "sqlmap", "bin": "sqlmap", "name": "SQLMap", "category": "audit",
+        "summary": "Uji SQL injection terbatas, tanpa dump, shell, atau perubahan data.",
+        "install": "sudo apt-get install -y sqlmap",
+        "usage": "sqlmap -u 'https://{{TARGET}}/?id=1' --batch --risk=1 --level=1 --technique=BE --threads=1 --timeout=10 --retries=1",
+    },
+    {
+        "id": "wpscan", "bin": "wpscan", "name": "WPScan", "category": "audit",
+        "summary": "Pemeriksaan versi plugin/tema WordPress yang rentan.",
+        "install": "sudo gem install wpscan",
+        "usage": "wpscan --url https://{{TARGET}}/ --enumerate vp,vt --random-user-agent --request-timeout 15 --no-update",
+    },
+    {
+        "id": "commix", "bin": "commix", "name": "Commix", "category": "audit",
+        "summary": "Uji command injection non-destruktif pada parameter yang diizinkan.",
+        "install": "git clone https://github.com/commixproject/commix /opt/commix && sudo ln -sf /opt/commix/commix.py /usr/local/bin/commix",
+        "usage": "commix --url='https://{{TARGET}}/?cmd=1' --batch --level=1 --skip-empty",
+    },
+    {
+        "id": "dalfox", "bin": "dalfox", "name": "Dalfox", "category": "param",
+        "summary": "Pemindaian XSS berbasis parameter dengan worker terbatas.",
+        "install": "go install github.com/hahwul/dalfox/v2@latest",
+        "usage": "dalfox url 'https://{{TARGET}}/?q=1' --worker 5 --delay 200 --skip-bav",
+    },
+    {
+        "id": "arjun", "bin": "arjun", "name": "Arjun", "category": "param",
+        "summary": "Penemuan parameter tersembunyi pada endpoint GET/POST.",
+        "install": "pipx install arjun",
+        "usage": "arjun -u https://{{TARGET}}/ -m GET --stable --quiet",
+    },
+    {
+        "id": "x8", "bin": "x8", "name": "x8", "category": "param",
+        "summary": "Ekstraksi parameter dari wordlist dengan jumlah request terkendali.",
+        "install": "cargo install x8",
+        "usage": "x8 -u https://{{TARGET}}/ -w /usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt",
+    },
+    {
+        "id": "subfinder", "bin": "subfinder", "name": "Subfinder", "category": "recon",
+        "summary": "Enumerasi subdomain pasif dari banyak sumber publik.",
+        "install": "go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
+        "usage": "subfinder -d {{TARGET}} -all -silent",
+    },
+    {
+        "id": "amass", "bin": "amass", "name": "Amass", "category": "recon",
+        "summary": "Pemetaan serangan-surface pasif beserta relasi DNS.",
+        "install": "go install github.com/owasp-amass/amass/v4/cmd/amass@latest",
+        "usage": "amass enum -passive -d {{TARGET}} -timeout 10",
+    },
+    {
+        "id": "chaos", "bin": "chaos", "name": "Chaos", "category": "recon",
+        "summary": "Subdomain dari dataset ProjectDiscovery yang sudah dikurasi.",
+        "install": "go install github.com/projectdiscovery/chaos-client/cmd/chaos@latest",
+        "usage": "chaos -d {{TARGET}} -silent -o /tmp/chaos-{{TARGET}}.txt",
+    },
+    {
+        "id": "dnsx", "bin": "dnsx", "name": "dnsx", "category": "recon",
+        "summary": "Validasi hasil subdomain lewat resolver sebelum dipindai.",
+        "install": "go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest",
+        "usage": "subfinder -d {{TARGET}} -silent | dnsx -silent -a -resp",
+    },
+    {
+        "id": "httpx", "bin": "httpx", "name": "httpx", "category": "recon",
+        "summary": "Probing HTTP: status, judul, teknologi, dan ringkasan TLS.",
+        "install": "go install github.com/projectdiscovery/httpx/cmd/httpx@latest",
+        "usage": "httpx -u https://{{TARGET}}/ -title -tech-detect -status-code -tls-grab",
+    },
+    {
+        "id": "katana", "bin": "katana", "name": "Katana", "category": "recon",
+        "summary": "Crawler untuk mengumpulkan URL dan endpoint dari aplikasi.",
+        "install": "go install github.com/projectdiscovery/katana/cmd/katana@latest",
+        "usage": "katana -u https://{{TARGET}}/ -d 2 -jc -rl 30 -silent",
+    },
+    {
+        "id": "gau", "bin": "gau", "name": "gau", "category": "recon",
+        "summary": "URL historis dari arsip publik untuk menemukan endpoint lama.",
+        "install": "go install github.com/lc/gau/v2/cmd/gau@latest",
+        "usage": "gau {{TARGET}} --threads 5 --subs",
+    },
+    {
+        "id": "tlsx", "bin": "tlsx", "name": "tlsx", "category": "recon",
+        "summary": "Inventaris TLS: versi protokol, masa berlaku, dan SAN.",
+        "install": "go install github.com/projectdiscovery/tlsx/cmd/tlsx@latest",
+        "usage": "tlsx -host {{TARGET}} -silent -tls-version -expired",
+    },
+    {
+        "id": "naabu", "bin": "naabu", "name": "Naabu", "category": "port",
+        "summary": "Penemuan port cepat dengan laju terkendali.",
+        "install": "go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
+        "usage": "naabu -host {{TARGET}} -top-ports 100 -rate 300 -silent",
+    },
+    {
+        "id": "nmap", "bin": "nmap", "name": "Nmap", "category": "port",
+        "summary": "Inventaris port dan versi layanan tanpa skrip agresif.",
+        "install": "sudo apt-get install -y nmap",
+        "usage": "nmap -sV -Pn --top-ports 200 -T3 {{TARGET}}",
+    },
+)
+
+
+def _arsenal_data() -> dict[str, Any]:
+    items = []
+    for entry in ARSENAL_CATALOG:
+        item = dict(entry)
+        item["installed"] = shutil.which(entry["bin"]) is not None
+        items.append(item)
+    return {
+        "items": items,
+        "installed": sum(1 for item in items if item["installed"]),
+        "total": len(items),
+    }
 
 
 def _scan_snapshot() -> dict[str, Any]:
@@ -1060,6 +1235,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/tools":
                 tools = _tool_inventory()
                 payload = {"tools": tools, "installed": sum(1 for tool in tools if tool["installed"]), "total": len(tools)}
+            elif path == "/api/arsenal":
+                payload = _arsenal_data()
             elif path == "/api/scope":
                 payload = _scope_data()
             elif path == "/api/proxies":
