@@ -41,3 +41,13 @@ state/bot/
 # OS noise
 # ---------------------------------------------------------------------------
 .DS_Store
+
+
+# Temporary VPS MCP updater runtime state
+vps_mcp/.venv/
+state/mcp_api_key
+state/mcp_url
+state/mcp.pid
+state/cloudflared.pid
+state/mcp.log
+state/cloudflared.log
