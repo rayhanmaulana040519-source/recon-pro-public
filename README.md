@@ -65,9 +65,12 @@ bash setup.sh --no-python            # tanpa toolkit Python
 `--with-arsenal` menambah tool pendamping di luar pipeline inti: **Skipfish**
 (crawler + pemetaan direktori), **Gobuster**, **Feroxbuster**, **dirsearch**
 (content discovery), **Arjun** (parameter), **WPScan** (WordPress), dan
-**Commix** (command injection). Paket ini dipasang lewat apt bila tersedia, lalu
-pipx/gem/cargo/git untuk sisanya; tool yang gagal dipasang hanya diberi
-peringatan dan tidak menghentikan setup. Recon Pro **tidak** menjalankan tool
+**Commix** (command injection). Prasyaratnya dipasang sendiri bila belum ada —
+`pipx` untuk Arjun/dirsearch, `unzip` untuk binary Feroxbuster, `ruby` +
+`ruby-dev` + `build-essential` untuk WPScan, dan `git` untuk Commix. Feroxbuster
+memakai binary resmi rilis terbaru dan baru jatuh ke `cargo` bila unduhan gagal.
+Tool yang tetap gagal dipasang hanya diberi peringatan (tidak menghentikan
+setup), dan baris terakhir mencetak `Arsenal terpasang: n/7` beserta lokasi log. Recon Pro **tidak** menjalankan tool
 arsenal secara otomatis — semuanya dipicu manual dari dashboard atau terminal.
 
 Daftar yang sama terlihat di tab **Arsenal** dashboard, lengkap dengan status

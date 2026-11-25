@@ -364,6 +364,31 @@ install_web_audit_tools() {
     return 0
 }
 
+install_apt_package() {
+    local pkg="$1"
+    if have "$pkg"; then
+        return 0
+    fi
+    case "$OS:$DISTRO" in
+        linux:ubuntu|linux:debian|linux:linuxmint|linux:pop|linux:elementary|linux:kali)
+            run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" >>"$LOG_FILE" 2>&1
+            ;;
+        linux:arch|linux:manjaro|linux:endeavouros)
+            run_root pacman -S --needed --noconfirm "$pkg" >>"$LOG_FILE" 2>&1
+            ;;
+        mac:*)
+            if have brew; then
+                brew install "$pkg" >>"$LOG_FILE" 2>&1
+            else
+                return 1
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 install_pipx_tool() {
     local tool="$1"
     if have "$tool"; then
@@ -371,11 +396,19 @@ install_pipx_tool() {
         return 0
     fi
     if ! have pipx; then
-        warn "$tool dilewati: pipx belum ada (pasang: sudo apt-get install -y pipx)"
+        info "Memasang pipx (prasyarat $tool) ..."
+        install_apt_package pipx || true
+    fi
+    if ! have pipx; then
+        warn "$tool dilewati: pipx belum tersedia (pasang: sudo apt-get install -y pipx)"
         return 0
     fi
     info "Memasang $tool lewat pipx ..."
-    pipx install "$tool" >>"$LOG_FILE" 2>&1 && ok "$tool" || warn "$tool gagal dipasang lewat pipx"
+    if pipx install "$tool" >>"$LOG_FILE" 2>&1; then
+        ok "$tool"
+    else
+        warn "$tool gagal dipasang lewat pipx; lihat ${LOG_FILE}"
+    fi
     return 0
 }
 
@@ -386,11 +419,46 @@ install_cargo_bin() {
         return 0
     fi
     if ! have cargo; then
-        warn "$tool dilewati: cargo (Rust) belum ada"
+        warn "$tool dilewati: cargo (Rust) belum ada (pasang: sudo apt-get install -y cargo)"
         return 0
     fi
     info "Memasang $tool lewat cargo (bisa lama) ..."
-    cargo install "$tool" >>"$LOG_FILE" 2>&1 && ok "$tool" || warn "$tool gagal dipasang lewat cargo"
+    if cargo install "$tool" >>"$LOG_FILE" 2>&1; then
+        ok "$tool"
+    else
+        warn "$tool gagal dipasang lewat cargo; lihat ${LOG_FILE}"
+    fi
+    return 0
+}
+
+install_feroxbuster() {
+    if have feroxbuster; then
+        ok "feroxbuster"
+        return 0
+    fi
+    local asset=""
+    case "$(uname -m)" in
+        x86_64|amd64) asset="x86_64-linux-feroxbuster.zip" ;;
+        aarch64|arm64) asset="aarch64-linux-feroxbuster.zip" ;;
+    esac
+    if [[ -n "$asset" ]] && have curl; then
+        info "Mengunduh feroxbuster (binary resmi rilis terbaru) ..."
+        if curl -fsSL --retry 2 -o /tmp/feroxbuster.zip \
+            "https://github.com/epi052/feroxbuster/releases/latest/download/${asset}" >>"$LOG_FILE" 2>&1; then
+            install_apt_package unzip || true
+            if have unzip && run_root unzip -o -q /tmp/feroxbuster.zip -d /usr/local/bin >>"$LOG_FILE" 2>&1; then
+                run_root chmod 755 /usr/local/bin/feroxbuster >>"$LOG_FILE" 2>&1 || true
+                if have feroxbuster; then
+                    rm -f /tmp/feroxbuster.zip
+                    ok "feroxbuster"
+                    return 0
+                fi
+            fi
+        fi
+        rm -f /tmp/feroxbuster.zip
+        warn "Unduhan feroxbuster tidak berhasil; mencoba cargo."
+    fi
+    install_cargo_bin feroxbuster
     return 0
 }
 
@@ -400,11 +468,21 @@ install_wpscan() {
         return 0
     fi
     if ! have gem; then
-        warn "wpscan dilewati: Ruby gem belum ada"
+        info "Memasang Ruby (prasyarat wpscan) ..."
+        install_apt_package ruby || true
+        install_apt_package ruby-dev || true
+        install_apt_package build-essential || true
+    fi
+    if ! have gem; then
+        warn "wpscan dilewati: Ruby gem belum tersedia (pasang: sudo apt-get install -y ruby ruby-dev build-essential)"
         return 0
     fi
-    info "Memasang wpscan lewat gem (Ruby) ..."
-    run_root gem install --no-document wpscan >>"$LOG_FILE" 2>&1 && ok "wpscan" || warn "wpscan gagal dipasang"
+    info "Memasang wpscan lewat gem (Ruby, bisa beberapa menit) ..."
+    if run_root gem install --no-document wpscan >>"$LOG_FILE" 2>&1 && have wpscan; then
+        ok "wpscan"
+    else
+        warn "wpscan gagal dipasang; lihat ${LOG_FILE}"
+    fi
     return 0
 }
 
@@ -414,15 +492,30 @@ install_commix() {
         return 0
     fi
     if ! have git; then
-        warn "commix dilewati: git belum ada"
+        info "Memasang git (prasyarat commix) ..."
+        install_apt_package git || true
+    fi
+    if ! have git; then
+        warn "commix dilewati: git belum tersedia"
         return 0
+    fi
+    if [[ -d /opt/commix/.git ]]; then
+        run_root ln -sf /opt/commix/commix.py /usr/local/bin/commix >>"$LOG_FILE" 2>&1 || true
+        if have commix; then
+            ok "commix"
+            return 0
+        fi
     fi
     info "Memasang commix dari repositori resminya ..."
     if run_root git clone --depth 1 https://github.com/commixproject/commix /opt/commix >>"$LOG_FILE" 2>&1; then
         run_root ln -sf /opt/commix/commix.py /usr/local/bin/commix >>"$LOG_FILE" 2>&1 || true
-        if have commix; then ok "commix"; else warn "commix terpasang tetapi tidak ada di PATH"; fi
+        if have commix; then
+            ok "commix"
+        else
+            warn "commix terpasang tetapi tidak ada di PATH"
+        fi
     else
-        warn "commix gagal dipasang"
+        warn "commix gagal dipasang; lihat ${LOG_FILE}"
     fi
     return 0
 }
@@ -432,8 +525,9 @@ install_arsenal_tools() {
         return 0
     fi
 
-    local pkg
+    local pkg bin ready=0
     local -a apt_packages=(skipfish gobuster dirsearch)
+    local -a arsenal_bins=(skipfish gobuster dirsearch feroxbuster arjun wpscan commix)
     case "$OS:$DISTRO" in
         linux:ubuntu|linux:debian|linux:linuxmint|linux:pop|linux:elementary|linux:kali)
             info "Memasang paket arsenal lewat apt (yang tersedia) ..."
@@ -456,8 +550,15 @@ install_arsenal_tools() {
     install_pipx_tool arjun
     install_pipx_tool dirsearch
     install_wpscan
-    install_cargo_bin feroxbuster
+    install_feroxbuster
     install_commix
+
+    for bin in "${arsenal_bins[@]}"; do
+        if have "$bin"; then
+            ready=$((ready + 1))
+        fi
+    done
+    info "Arsenal terpasang: ${ready}/${#arsenal_bins[@]} (detail: ${LOG_FILE})"
     return 0
 }
 
