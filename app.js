@@ -593,11 +593,13 @@
   async function startShell(event) {
     event.preventDefault();
     const command = $("#shellCommand").value.trim();
+    const cwd = $("#shellCwd").value.trim() || "/";
     if (!command) return;
-    if (!window.confirm("Shell ini dapat menjalankan perintah dengan hak akun Linux dashboard dan melewati scope check UI. Jalankan hanya command yang Anda pahami pada target berizin. Lanjutkan?")) return;
+    sessionStorage.setItem("reconpro-shell-cwd", cwd);
+    if (!window.confirm(`Shell ini berjalan dengan hak akun Linux dashboard, dimulai dari ${cwd}, dan melewati scope check UI. Jalankan hanya command yang Anda pahami pada sistem yang berwenang Anda kelola. Lanjutkan?`)) return;
     $("#runShell").disabled = true;
     try {
-      const result = await request("/api/shell/start", { method: "POST", body: JSON.stringify({ command, acknowledged: true }) });
+      const result = await request("/api/shell/start", { method: "POST", body: JSON.stringify({ command, cwd, acknowledged: true }) });
       state.shellId = result.shell.id;
       state.shellSeq = 0;
       state.shellRunning = true;
@@ -605,7 +607,7 @@
       output.replaceChildren();
       const entered = document.createElement("span");
       entered.className = "console-line";
-      entered.textContent = `$ ${command}`;
+      entered.textContent = `${cwd} $ ${command}`;
       output.append(entered, document.createTextNode("\n"));
       $("#shellCommand").value = "";
       await refreshShellOutput();
@@ -633,6 +635,9 @@
   }
 
   function bindEvents() {
+    const savedShellCwd = sessionStorage.getItem("reconpro-shell-cwd");
+    if (savedShellCwd) $("#shellCwd").value = savedShellCwd;
+    $("#shellCwd").addEventListener("input", () => sessionStorage.setItem("reconpro-shell-cwd", $("#shellCwd").value));
     $("#loginForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       text(loginError, "Memeriksa token…");

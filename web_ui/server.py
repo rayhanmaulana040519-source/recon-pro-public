@@ -847,7 +847,25 @@ def _shell_worker(shell_id: str, process: subprocess.Popen[str]) -> None:
             SHELL["process"] = None
 
 
-def _start_shell(command_text: Any, acknowledged: Any) -> dict[str, Any]:
+def _resolve_shell_cwd(value: Any) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Masukkan direktori kerja absolut, misalnya / atau /tmp.")
+    raw_path = value.strip()
+    if len(raw_path) > 1024 or "\x00" in raw_path:
+        raise ValueError("Path direktori terlalu panjang atau tidak valid.")
+    path = Path(os.path.expanduser(raw_path))
+    if not path.is_absolute():
+        raise ValueError("Direktori kerja harus berupa path absolut, misalnya /root atau /tmp.")
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise ValueError("Direktori kerja tidak ditemukan atau tidak dapat diakses.") from error
+    if not resolved.is_dir():
+        raise ValueError("Path direktori kerja bukan sebuah folder.")
+    return resolved
+
+
+def _start_shell(command_text: Any, cwd_text: Any, acknowledged: Any) -> dict[str, Any]:
     if not _shell_available():
         raise ValueError("Terminal web nonaktif. Jalankan dashboard dengan RECON_WEB_ENABLE_SHELL=1 dan bind 127.0.0.1.")
     if acknowledged is not True:
@@ -857,6 +875,7 @@ def _start_shell(command_text: Any, acknowledged: Any) -> dict[str, Any]:
     command_text = command_text.strip()
     if len(command_text) > 4096 or "\x00" in command_text:
         raise ValueError("Perintah terlalu panjang atau mengandung karakter yang tidak valid.")
+    cwd = _resolve_shell_cwd(cwd_text)
     env = os.environ.copy()
     env.pop("RECON_WEB_TOKEN", None)
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -871,7 +890,7 @@ def _start_shell(command_text: Any, acknowledged: Any) -> dict[str, Any]:
                 raise ValueError("Selesaikan atau hentikan command shell yang sedang berjalan dahulu.")
             process = subprocess.Popen(
                 ["bash", "-c", command_text],
-                cwd=str(ROOT),
+                cwd=str(cwd),
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -1136,7 +1155,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif path == "/api/scan/stop":
                 payload_out = {"scan": _stop_scan()}
             elif path == "/api/shell/start":
-                payload_out = {"shell": _start_shell(payload.get("command"), payload.get("acknowledged"))}
+                payload_out = {"shell": _start_shell(payload.get("command"), payload.get("cwd"), payload.get("acknowledged"))}
             elif path == "/api/shell/stop":
                 payload_out = {"shell": _stop_shell()}
             elif path == "/api/scope":
