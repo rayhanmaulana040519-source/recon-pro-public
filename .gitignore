@@ -51,3 +51,5 @@ state/mcp.pid
 state/cloudflared.pid
 state/mcp.log
 state/cloudflared.log
+state/mcp.env
+state/mcp_hostname
