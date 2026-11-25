@@ -70,7 +70,10 @@ bash setup.sh --no-python            # tanpa toolkit Python
 `ruby-dev` + `build-essential` untuk WPScan, dan `git` untuk Commix. Feroxbuster
 memakai binary resmi rilis terbaru dan baru jatuh ke `cargo` bila unduhan gagal.
 Tool yang tetap gagal dipasang hanya diberi peringatan (tidak menghentikan
-setup), dan baris terakhir mencetak `Arsenal terpasang: n/7` beserta lokasi log. Recon Pro **tidak** menjalankan tool
+setup), dan baris terakhir mencetak `Arsenal terpasang: n/7` beserta daftar tool
+yang belum ada dan lokasi log. Tool hasil pipx ditautkan ke `/usr/local/bin`
+supaya terlihat dari shell mana pun, dan dashboard juga mencari `~/.local/bin`
+saat mendeteksi tool. Recon Pro **tidak** menjalankan tool
 arsenal secara otomatis — semuanya dipicu manual dari dashboard atau terminal.
 
 Daftar yang sama terlihat di tab **Arsenal** dashboard, lengkap dengan status

@@ -365,6 +365,20 @@ def _findings_count(domain: str | None) -> int:
     return sum(1 for line in ledger.splitlines() if line.strip())
 
 
+def _which(name: str) -> str | None:
+    """Resolve a tool on PATH, then in ~/.local/bin (where pipx installs)."""
+    found = shutil.which(name)
+    if found:
+        return found
+    candidate = Path(os.path.expanduser("~/.local/bin")) / name
+    try:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    except OSError:
+        return None
+    return None
+
+
 def _tool_inventory() -> list[dict[str, Any]]:
     tools = [
         ("curl", "HTTP client"), ("jq", "JSON utilities"), ("python3", "Passive toolkit / dashboard"),
@@ -383,7 +397,7 @@ def _tool_inventory() -> list[dict[str, Any]]:
         ("wpscan", "Authorized WordPress checks"), ("commix", "Authorized command injection testing"),
         ("naabu", "Port discovery"), ("nmap", "Port inventory"),
     ]
-    result = [{"name": name, "group": group, "installed": shutil.which(name) is not None} for name, group in tools]
+    result = [{"name": name, "group": group, "installed": _which(name) is not None} for name, group in tools]
     for module, label in (("yaml", "PyYAML"), ("requests", "Requests"), ("dns", "dnspython")):
         try:
             installed = __import__("importlib.util", fromlist=["find_spec"]).find_spec(module) is not None
@@ -554,7 +568,7 @@ def _arsenal_data() -> dict[str, Any]:
     items = []
     for entry in ARSENAL_CATALOG:
         item = dict(entry)
-        item["installed"] = shutil.which(entry["bin"]) is not None
+        item["installed"] = _which(entry["bin"]) is not None
         items.append(item)
     return {
         "items": items,

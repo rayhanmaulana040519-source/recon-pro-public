@@ -145,6 +145,15 @@ run_root() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# pipx drops binaries into ~/.local/bin, which is not on PATH for a non-login
+# shell. Without this every later check — and the dashboard inventory — would
+# report an installed tool as missing.
+case ":$PATH:" in
+    *":${HOME}/.local/bin:"*) ;;
+    *) PATH="${HOME}/.local/bin:${PATH}" ;;
+esac
+export PATH
+
 # ------------------------------------------------------------- system tools --
 install_packages() {
     if (( ! DO_PACKAGES )); then
@@ -364,9 +373,17 @@ install_web_audit_tools() {
     return 0
 }
 
+apt_package_present() {
+    if command -v dpkg >/dev/null 2>&1; then
+        dpkg -s "$1" >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+
 install_apt_package() {
     local pkg="$1"
-    if have "$pkg"; then
+    if have "$pkg" || apt_package_present "$pkg"; then
         return 0
     fi
     case "$OS:$DISTRO" in
@@ -404,10 +421,26 @@ install_pipx_tool() {
         return 0
     fi
     info "Memasang $tool lewat pipx ..."
-    if pipx install "$tool" >>"$LOG_FILE" 2>&1; then
+    if ! pipx install "$tool" >>"$LOG_FILE" 2>&1; then
+        warn "$tool gagal dipasang lewat pipx; lihat ${LOG_FILE}"
+        return 0
+    fi
+    # Link the console script into /usr/local/bin so every shell, cron job and
+    # the dashboard see it without sourcing .bashrc first.
+    local bin_dir
+    bin_dir=$(pipx environment --value PIPX_BIN_DIR 2>/dev/null || true)
+    if [[ -z "$bin_dir" ]]; then
+        bin_dir="${HOME}/.local/bin"
+    fi
+    if [[ -x "${bin_dir}/${tool}" ]]; then
+        run_root ln -sf "${bin_dir}/${tool}" "/usr/local/bin/${tool}" >>"$LOG_FILE" 2>&1 || true
+    fi
+    PATH="/usr/local/bin:${bin_dir}:${PATH}"
+    export PATH
+    if have "$tool"; then
         ok "$tool"
     else
-        warn "$tool gagal dipasang lewat pipx; lihat ${LOG_FILE}"
+        warn "$tool terpasang di ${bin_dir} tetapi belum ada di PATH"
     fi
     return 0
 }
@@ -471,17 +504,22 @@ install_wpscan() {
         info "Memasang Ruby (prasyarat wpscan) ..."
         install_apt_package ruby || true
         install_apt_package ruby-dev || true
-        install_apt_package build-essential || true
     fi
     if ! have gem; then
         warn "wpscan dilewati: Ruby gem belum tersedia (pasang: sudo apt-get install -y ruby ruby-dev build-essential)"
         return 0
     fi
+    # wpscan needs to compile native extensions (nokogiri, ethon, ffi); without
+    # these headers `gem install` fails on a minimal VPS.
+    local dep
+    for dep in build-essential pkg-config libcurl4-openssl-dev libxml2-dev libxslt1-dev zlib1g-dev libsqlite3-dev; do
+        install_apt_package "$dep" || true
+    done
     info "Memasang wpscan lewat gem (Ruby, bisa beberapa menit) ..."
     if run_root gem install --no-document wpscan >>"$LOG_FILE" 2>&1 && have wpscan; then
         ok "wpscan"
     else
-        warn "wpscan gagal dipasang; lihat ${LOG_FILE}"
+        warn "wpscan gagal dipasang; periksa bagian terakhir ${LOG_FILE}"
     fi
     return 0
 }
@@ -525,7 +563,7 @@ install_arsenal_tools() {
         return 0
     fi
 
-    local pkg bin ready=0
+    local pkg bin ready=0 missing=""
     local -a apt_packages=(skipfish gobuster dirsearch)
     local -a arsenal_bins=(skipfish gobuster dirsearch feroxbuster arjun wpscan commix)
     case "$OS:$DISTRO" in
@@ -537,6 +575,8 @@ install_arsenal_tools() {
                     ok "$pkg"
                 elif run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" >>"$LOG_FILE" 2>&1; then
                     ok "$pkg"
+                elif [[ "$pkg" == "skipfish" ]]; then
+                    warn "skipfish tidak ada di repo distro ini (umumnya hanya Debian lama atau Kali); pakai gobuster/dirsearch/feroxbuster sebagai pengganti."
                 else
                     warn "$pkg tidak tersedia lewat apt (opsional, dilewati)"
                 fi
@@ -556,9 +596,14 @@ install_arsenal_tools() {
     for bin in "${arsenal_bins[@]}"; do
         if have "$bin"; then
             ready=$((ready + 1))
+        else
+            missing="${missing} ${bin}"
         fi
     done
-    info "Arsenal terpasang: ${ready}/${#arsenal_bins[@]} (detail: ${LOG_FILE})"
+    info "Arsenal terpasang: ${ready}/${#arsenal_bins[@]}"
+    if [[ -n "$missing" ]]; then
+        warn "Belum terpasang:${missing} — detail pemasangan ada di ${LOG_FILE}"
+    fi
     return 0
 }
 
