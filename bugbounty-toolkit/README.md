@@ -20,6 +20,8 @@ check**, and nothing it does is more invasive than a browser visiting the site.
 | DNS | A, AAAA, CNAME, MX, TXT, NS, SOA | system resolver via `dnspython` |
 | Registration data | registrar, status, nameservers, events | RDAP (`rdap.org`), no WHOIS port 43 |
 | HTTP header analysis | security headers, server, framework, cookies, CORS answer | one GET per host, root path only |
+| TLS inspection | the certificate actually served today (issuer, dates, trust) and the negotiated protocol | one TLS handshake per probed host |
+| robots.txt | the paths the site itself disallows for crawlers | one GET of `/robots.txt`, no path guessed |
 | Technology detection | server, framework, CDN, CMS from headers/cookies/HTML markers | signature table in `modules/tech_detector.py` |
 | History & diff | new/removed subdomains, technology, header, certificate and DNS changes | `modules/history_manager.py` |
 | Analysis | explained findings with severity, impact, confidence and a manual check | `modules/analyzer.py` |
@@ -108,17 +110,19 @@ Everything else has a working default. The two values worth reviewing:
 
 ## Run
 
-Run from the toolkit directory so the relative paths in the config resolve:
+The command works from **any** directory: every path in the config is resolved
+against the toolkit folder, so there is no need to `cd` into it first.
 
 ```bash
-cd bugbounty-toolkit
-
-python3 main.py --dry-run example.com      # scope decision + plan, no requests
-python3 main.py example.com                # full passive run
-python3 main.py example.com example.org    # several targets in one run
-python3 main.py --no-http example.com      # DNS/CT/RDAP only, no HTTP at all
-python3 main.py -q example.com             # quiet console, log file only
+python3 bugbounty-toolkit/main.py                 # list the domains in scope, send nothing
+python3 bugbounty-toolkit/main.py example.com     # full passive run for one domain
+python3 bugbounty-toolkit/main.py --all           # every domain in scope, one after another
+python3 bugbounty-toolkit/main.py --dry-run example.com   # scope decision + plan, no requests
+python3 bugbounty-toolkit/main.py --no-http example.com   # CT, archives, DNS and RDAP only
+python3 bugbounty-toolkit/main.py -q example.com  # quiet console, log file only
 ```
+
+From inside the toolkit folder the same commands are just `python3 main.py ...`.
 
 Exit codes: `0` success, `1` unexpected error, `2` at least one target refused by
 the scope check.
@@ -164,8 +168,12 @@ honest limitations:
 
 * **DNS is not proxied.** `dnsx`-style lookups and `dnspython` resolution go to
   the resolver directly, so the resolver still sees which names you asked for.
-* **RDAP, crt.sh, Cert Spotter, the Wayback CDX index and OTX are third-party
-  services.** They see your IP (or your proxy's IP) as any normal visitor would.
+* **The TLS handshake is not proxied either.** It is a raw socket to port 443 of
+  the target, because `requests` cannot pass a proxy into a handshake it did not
+  open.
+* **RDAP, crt.sh, Cert Spotter, the Wayback CDX index, Common Crawl, OTX, Anubis
+  and RapidDNS are third-party services.** They see your IP (or your proxy's IP)
+  as any normal visitor would.
 
 A proxy hides your address from the target; it does not make you anonymous.
 

@@ -186,7 +186,7 @@ run_passive() {
 
     ensure_toolkit_scope "$domain"
 
-    info "Mode pasif (crt.sh, DNS, RDAP, header, teknologi) untuk ${domain} ..."
+    info "Mode pasif (CT logs, Wayback, Common Crawl, OTX, Anubis, RapidDNS, DNS, AXFR, TLS, robots) untuk ${domain} ..."
     if ! ( cd -- "$TOOLKIT_DIR" && "$py" main.py "$domain" ); then
         warn "Toolkit pasif selesai dengan error; lihat ${TOOLKIT_DIR}/logs/toolkit.log"
     fi

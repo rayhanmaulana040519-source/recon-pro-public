@@ -179,6 +179,9 @@ class ReportGenerator:
         js_files = sum(int(entry.get("js_scanned") or 0) for entry in js_entries)
         js_secrets = sum(len(entry.get("secrets", []) or []) for entry in js_entries)
         js_maps = sum(len(entry.get("source_maps", []) or []) for entry in js_entries)
+        hosts = [host for host in snapshot.get("hosts", []) or [] if isinstance(host, dict)]
+        tls_read = sum(1 for host in hosts if (host.get("tls", {}) or {}).get("version"))
+        robots_paths = sum(len((host.get("robots", {}) or {}).get("paths", []) or []) for host in hosts)
         lines = [
             "| Field | Value |",
             "| --- | --- |",
@@ -188,8 +191,13 @@ class ReportGenerator:
             f"| — from Cert Spotter | {sources.get('certspotter', 'n/a')} |",
             f"| — from Wayback CDX | {sources.get('wayback', 'n/a')} |",
             f"| — from OTX passive DNS | {sources.get('otx', 'n/a')} |",
+            f"| — from Anubis | {sources.get('anubis', 'n/a')} |",
+            f"| — from RapidDNS | {sources.get('rapiddns', 'n/a')} |",
             f"| Archived URLs (Wayback + Common Crawl) | {len(snapshot.get('archived_urls', []) or [])} |",
-            f"| Hosts probed over HTTP | {len(snapshot.get('hosts', []) or [])} |",
+            f"| — from Common Crawl | {sources.get('commoncrawl_urls', 'n/a')} |",
+            f"| Hosts probed over HTTP | {len(hosts)} |",
+            f"| TLS certificates read directly | {tls_read} host(s) |",
+            f"| robots.txt paths disclosed | {robots_paths} |",
             f"| Live subdomains (DNS) | {len(snapshot.get('live_subdomains', []) or [])} |",
             f"| JavaScript scanned | {js_files} file(s), {js_secrets} secret(s), {js_maps} source map(s) |",
             f"| Registrar (RDAP) | {whois.get('registrar') or 'not reported'} |",

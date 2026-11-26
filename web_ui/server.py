@@ -761,8 +761,17 @@ def _passive_report_paths(domain: str) -> list[Path]:
         return []
 
 
+PASSIVE_CACHE_LOCK = threading.Lock()
+PASSIVE_CACHE: dict[str, tuple[float, int, dict[str, Any]]] = {}
+
+
 def _passive_summary(domain: str) -> dict[str, Any]:
-    """Summarise the newest passive snapshot stored by the bugbounty toolkit."""
+    """Summarise the newest passive snapshot stored by the bugbounty toolkit.
+
+    The dashboard polls this endpoint for as long as it is open and a snapshot
+    can be several megabytes, so the parsed summary is cached until the file
+    under ``data/history`` changes on disk.
+    """
     try:
         candidates = [
             path for path in (TOOLKIT_HISTORY_DIR / domain).glob("*.json")
@@ -775,6 +784,16 @@ def _passive_summary(domain: str) -> dict[str, Any]:
         raise ValueError("Belum ada snapshot pasif untuk domain ini. Jalankan scan passive dahulu.")
 
     try:
+        stats = latest.stat()
+    except OSError as error:
+        raise ValueError("Snapshot pasif tidak dapat dibaca: {}".format(error)) from error
+
+    with PASSIVE_CACHE_LOCK:
+        cached = PASSIVE_CACHE.get(domain)
+    if cached is not None and cached[0] == stats.st_mtime and cached[1] == stats.st_size:
+        return cached[2]
+
+    try:
         snapshot = json.loads(latest.read_text(encoding="utf-8", errors="replace")[: 8 * 1024 * 1024])
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError("Snapshot pasif tidak dapat dibaca: {}".format(error)) from error
@@ -783,24 +802,32 @@ def _passive_summary(domain: str) -> dict[str, Any]:
 
     sources = snapshot.get("sources", {}) or {}
     js_entries = [entry for entry in snapshot.get("js_intel", []) or [] if isinstance(entry, dict)]
+    hosts = [host for host in snapshot.get("hosts", []) or [] if isinstance(host, dict)]
     axfr = snapshot.get("axfr", {}) or {}
-    return {
+    summary = {
         "target": domain,
         "collected_at": str(snapshot.get("collected_at", "") or ""),
         "snapshot_file": latest.name,
         "subdomains": len(snapshot.get("subdomains", []) or []),
         "live_subdomains": len(snapshot.get("live_subdomains", []) or []),
         "archived_urls": len(snapshot.get("archived_urls", []) or []),
-        "hosts_probed": len(snapshot.get("hosts", []) or []),
+        "hosts_probed": len(hosts),
         "certificates": len(snapshot.get("certificates", []) or []),
         "sources": {str(key): int(value or 0) for key, value in sources.items() if isinstance(value, (int, float))},
         "axfr": bool(isinstance(axfr, dict) and axfr.get("records")),
         "axfr_ns": str((axfr or {}).get("ns", "") or ""),
         "dmarc": bool(str(snapshot.get("dmarc", "") or "").strip()),
+        "dmarc_checked": bool(snapshot.get("dmarc_checked")),
         "js_scanned": sum(int(entry.get("js_scanned") or 0) for entry in js_entries),
         "js_secrets": sum(len(entry.get("secrets", []) or []) for entry in js_entries),
         "js_source_maps": sum(len(entry.get("source_maps", []) or []) for entry in js_entries),
+        "tls_verified": sum(1 for host in hosts if (host.get("tls", {}) or {}).get("version")),
+        "tls_failed": sum(1 for host in hosts if (host.get("tls", {}) or {}).get("verification_failed")),
+        "robots_paths": sum(len((host.get("robots", {}) or {}).get("paths", []) or []) for host in hosts),
     }
+    with PASSIVE_CACHE_LOCK:
+        PASSIVE_CACHE[domain] = (stats.st_mtime, stats.st_size, summary)
+    return summary
 
 
 def _latest_report_paths(domain: str) -> dict[str, Path]:

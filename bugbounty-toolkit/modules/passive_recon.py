@@ -563,7 +563,11 @@ class PassiveRecon:
 
         for nameserver in nameservers:
             try:
-                zone = dns.zone.from_xfr(dns.query.xfr(nameserver, domain, timeout=self.dns_timeout))
+                # lifetime bounds the whole transfer: without it a nameserver
+                # that silently drops AXFR packets stalls the run for minutes.
+                zone = dns.zone.from_xfr(
+                    dns.query.xfr(nameserver, domain, timeout=self.dns_timeout, lifetime=self.dns_timeout * 2)
+                )
                 records = sorted(str(node) for node in zone.nodes.keys())[:200]
                 self.logger.warning("AXFR succeeded against %s — zone exposed (%d record(s))", nameserver, len(records))
                 return {"ns": nameserver, "records": records}
@@ -574,25 +578,47 @@ class PassiveRecon:
         return {}
 
     # -- DMARC ----------------------------------------------------------------
-    def dmarc_record(self, domain: str) -> str:
-        """Read the ``_dmarc`` TXT record, or an empty string when absent."""
-        if not self.enable_dns or not DNS_AVAILABLE:
-            return ""
+    def dmarc_record(self, domain: str) -> tuple[str, bool]:
+        """Read the ``_dmarc`` TXT record.
+
+        Args:
+            domain: Apex domain, already scope-checked by the caller.
+
+        Returns:
+            ``(record, checked)``. ``record`` is the joined TXT value, or an
+            empty string when the domain publishes none. ``checked`` is True only
+            when the resolver actually answered the query, so the analyzer never
+            reports "no DMARC record" for a lookup that could not be made.
+        """
+        if not self.enable_dns:
+            self.logger.info("DNS collection disabled; DMARC not checked")
+            return "", False
+        if not DNS_AVAILABLE:
+            self.logger.warning("dnspython is not installed; skipping DMARC lookup")
+            return "", False
+
         resolver = dns.resolver.Resolver(configure=True)
         resolver.timeout = self.dns_timeout
         resolver.lifetime = self.dns_timeout
         try:
             answer = resolver.resolve(f"_dmarc.{domain}", "TXT", raise_on_no_answer=False)
-        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.NoNameservers, dns.exception.DNSException):
-            return ""
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            # A definite answer: the name or the record does not exist.
+            return "", True
+        except (dns.resolver.NoNameservers, dns.exception.Timeout):
+            self.logger.info("DMARC lookup for %s did not complete", domain)
+            return "", False
+        except dns.exception.DNSException as error:
+            self.logger.info("DMARC lookup failed for %s: %s", domain, error)
+            return "", False
         if answer.rrset is None:
-            return ""
+            return "", True
         values: list[str] = []
         for rdata in answer.rrset:
             chunks = getattr(rdata, "strings", None)
             if chunks:
                 values.append(b"".join(chunks).decode("utf-8", "replace"))
-        return "".join(values)
+        return "".join(values), True
 
     # -- orchestration --------------------------------------------------------
     def run(self, domain: str) -> dict[str, Any]:
@@ -653,7 +679,7 @@ class PassiveRecon:
         # Hostnames that still answer DNS today, over the discovered surface.
         live_subdomains = self.resolve_live_hosts(sorted(subdomains)[: self.max_subdomains])
         axfr = self.zone_transfer(domain)
-        dmarc = self.dmarc_record(domain)
+        dmarc, dmarc_checked = self.dmarc_record(domain)
 
         return {
             "target": domain,
@@ -667,4 +693,5 @@ class PassiveRecon:
             "live_subdomains": live_subdomains,
             "axfr": axfr,
             "dmarc": dmarc,
+            "dmarc_checked": dmarc_checked,
         }

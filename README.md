@@ -21,8 +21,10 @@ bash recon.sh example.com     # scan aktif + toolkit pasif sekaligus
 
 1. **pipeline aktif** (`recon_pro.sh`) — subdomain, DNS, TLS, port, URL, nuclei,
    dalfox, ffuf, takeover, CORS, exposures, GraphQL, JS secrets;
-2. **toolkit pasif** (`bugbounty-toolkit/`) — crt.sh, DNS, RDAP, analisis header,
-   deteksi teknologi, diff antar run, laporan Markdown dengan penjelasan.
+2. **toolkit pasif** (`bugbounty-toolkit/`) — CT logs (crt.sh + Cert Spotter),
+   Wayback, Common Crawl, OTX, Anubis, RapidDNS, DNS, AXFR, DMARC/SPF, TLS,
+   robots.txt, intel JavaScript, analisis header, diff antar run, dan laporan
+   Markdown dengan penjelasan.
 
 Kalau tool atau toolkit belum siap, `recon.sh` memanggil `setup.sh` dulu. Semua
 perintah aman dijalankan berulang.

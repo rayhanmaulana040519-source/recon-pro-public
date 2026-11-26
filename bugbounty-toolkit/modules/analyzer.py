@@ -92,6 +92,18 @@ HEADER_RULES: list[dict[str, Any]] = [
 
 TAKEOVER_PREFIXES = ("s3.amazonaws.com",)
 
+# ``Disallow`` entries in robots.txt that usually point at something worth
+# looking at. Matching is a substring test on the lowercased path.
+DEFAULT_PATH_HINTS = (
+    "admin", "internal", "backup", "private", "config", "secret", "debug",
+    "staging", "dev", "test", "database", "sql", "upload", "api", "graphql",
+    "phpmyadmin", "wp-admin", "server-status",
+)
+
+# ``ssl.SSLSocket.version()`` values old enough to be a finding, normalised the
+# same way the analyzer compares them ("TLSv1.1" -> "TLSV11").
+WEAK_TLS_VERSIONS = ("TLSV1", "TLSV11")
+
 
 @dataclass
 class Finding:
@@ -152,6 +164,7 @@ class Analyzer:
         self.takeover_suffixes = [str(item).lower() for item in analysis.get("dangling_cname_suffixes", []) or []]
         self.sensitive_hints = [str(item).lower() for item in analysis.get("sensitive_label_hints", []) or []]
         self.max_per_category = max(1, int(analysis.get("max_per_category", 10)))
+        self.path_hints = [str(item).lower() for item in (analysis.get("sensitive_path_hints") or DEFAULT_PATH_HINTS)]
         self._findings: list[Finding] = []
 
     # -- public API -----------------------------------------------------------
@@ -169,6 +182,8 @@ class Analyzer:
             self._rule_cookies(host)
             self._rule_cors(host)
             self._rule_http_only(host)
+            self._rule_tls(host)
+            self._rule_robots(host)
 
         self._rule_certificates(snapshot)
         self._rule_dangling_cnames(snapshot, domain)
@@ -307,38 +322,143 @@ class Analyzer:
         """Report session cookies missing Secure, HttpOnly or SameSite."""
         url = str(host.get("url", ""))
         for cookie in host.get("cookies", []) or []:
-            name = str(cookie).split("=", 1)[0].strip()
-            # Cookies are only visible as a name/value pair here, so the flags are
-            # judged from the raw Set-Cookie string kept by the detector.
-            raw = str(cookie).lower()
-            if "secure" not in raw:
+            raw = str(cookie)
+            name = raw.split("=", 1)[0].strip()
+            # Attributes live after the first ';'. Reading only that part matters:
+            # a cookie whose *value* contains the word "secure" must not hide a
+            # missing Secure flag. The value itself is never written to the report.
+            attributes = raw.split(";", 1)[1].lower() if ";" in raw else ""
+            shown = _mask_cookie(raw)
+            if "secure" not in attributes:
                 self._add(
                     title=f"Cookie {name or 'unknown'} without the Secure attribute",
                     category="insecure cookie",
                     host=url,
                     severity="Medium",
                     confidence="likely",
-                    evidence=f"{url} — Set-Cookie: {cookie}",
+                    evidence=f"{url} — Set-Cookie: {shown}",
                     what="The cookie can be sent over a plain-HTTP request.",
                     why="Any downgrade to HTTP, or a mixed-content request, exposes the cookie on the wire.",
                     impact="Session hijacking for a user on a hostile network.",
                     verify=f"curl -sI {url} | grep -i '^set-cookie'  and read the cookie attributes",
                     recommendation="Mark session cookies Secure, HttpOnly and SameSite=Lax (or Strict).",
                 )
-            if "httponly" not in raw:
+            if "httponly" not in attributes:
                 self._add(
                     title=f"Cookie {name or 'unknown'} without the HttpOnly attribute",
                     category="insecure cookie",
                     host=url,
                     severity="Medium",
                     confidence="likely",
-                    evidence=f"{url} — Set-Cookie: {cookie}",
+                    evidence=f"{url} — Set-Cookie: {shown}",
                     what="Client-side JavaScript can read the cookie.",
                     why="Any cross-site scripting on the origin can steal the session directly.",
                     impact="Session takeover from a single script injection.",
                     verify=f"curl -sI {url} | grep -i '^set-cookie'  and read the cookie attributes",
                     recommendation="Add HttpOnly to every cookie that the browser does not need to read.",
                 )
+            if "samesite" not in attributes:
+                self._add(
+                    title=f"Cookie {name or 'unknown'} without the SameSite attribute",
+                    category="insecure cookie",
+                    host=url,
+                    severity="Low",
+                    confidence="likely",
+                    evidence=f"{url} — Set-Cookie: {shown}",
+                    what="The cookie does not declare whether it may travel with cross-site requests.",
+                    why="Without SameSite, a page on another site can make the browser send this cookie along with a forged request.",
+                    impact="Cross-site request forgery wherever an endpoint relies on the cookie alone and checks no token.",
+                    verify=f"curl -sI {url} | grep -i '^set-cookie'  and read the SameSite attribute",
+                    recommendation="Add SameSite=Lax (Strict for session cookies) and keep a CSRF token on state-changing requests.",
+                )
+
+    def _rule_tls(self, host: Mapping[str, Any]) -> None:
+        """Report a certificate clients reject and TLS versions already retired."""
+        url = str(host.get("url", ""))
+        tls = host.get("tls", {}) or {}
+        if not isinstance(tls, dict) or not tls:
+            return
+
+        if tls.get("verification_failed"):
+            self._add(
+                title="TLS certificate is rejected by a verifying client",
+                category="transport security",
+                host=url,
+                severity="High",
+                confidence="confirmed",
+                evidence=f"{url} — handshake failed verification: {tls.get('error', '')}",
+                what="A client that validates certificates could not accept the one this host presents.",
+                why="Expired, self-signed or wrong-name certificates are refused before any content is shown.",
+                impact="Browsers show a full-page warning and well-behaved clients refuse the connection entirely, which trains users to click through warnings.",
+                verify=f"openssl s_client -connect <host>:443 -servername <host> </dev/null 2>&1 | grep -E 'verify|notAfter'",
+                recommendation="Install a currently valid certificate that covers this exact hostname and automate renewal.",
+            )
+            return
+
+        version = str(tls.get("version", "")).upper().replace(".", "")
+        if version in WEAK_TLS_VERSIONS:
+            self._add(
+                title=f"Host negotiates outdated {tls.get('version', 'TLS')}",
+                category="transport security",
+                host=url,
+                severity="Medium",
+                confidence="confirmed",
+                evidence=f"{url} — TLS handshake completed with {tls.get('version', '')}",
+                what="The server still accepts a TLS version that has been deprecated for years.",
+                why="TLS 1.0 and 1.1 use primitives that are no longer considered safe, and the major browsers removed support for them.",
+                impact="Traffic can be decrypted or downgraded by an attacker on the path when the client falls back that far.",
+                verify=f"nmap -p443 --script ssl-enum-ciphers <host>  or  openssl s_client -tls1_1 -connect <host>:443",
+                recommendation="Allow TLS 1.2 and 1.3 only, and disable the older protocol versions on the terminator.",
+            )
+
+        not_after = str(tls.get("not_after", "")).strip()
+        if not not_after:
+            return
+        try:
+            expiry = datetime.strptime(not_after[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return
+        days_left = (expiry - datetime.now(timezone.utc)).days
+        if days_left > 14:
+            return
+        self._add(
+            title="Live certificate expires within 14 days" if days_left >= 0 else "Live certificate has expired",
+            category="certificate lifecycle",
+            host=url,
+            severity="High" if days_left < 0 else "Medium",
+            confidence="confirmed",
+            evidence=f"{url} — served certificate notAfter {not_after[:10]} ({days_left} day(s) from today)",
+            what="The certificate this host serves right now is expired or about to expire.",
+            why="This is the certificate on the wire, not a historical CT entry, so this one is the one clients see.",
+            impact="Every visitor gets an interstitial, and API clients that verify certificates stop working.",
+            verify=f"openssl s_client -connect <host>:443 -servername <host> </dev/null 2>/dev/null | openssl x509 -noout -dates",
+            recommendation="Renew now and automate renewal with a monitor that warns at least 30 days ahead.",
+        )
+
+    def _rule_robots(self, host: Mapping[str, Any]) -> None:
+        """Point out robots.txt entries that name administration or internal paths."""
+        url = str(host.get("url", ""))
+        robots = host.get("robots", {}) or {}
+        paths = [str(item) for item in robots.get("paths", []) or []]
+        if not paths:
+            return
+        interesting = [path for path in paths if any(hint in path.lower() for hint in self.path_hints)]
+        if not interesting:
+            return
+        shown = ", ".join(interesting[:8])
+        self._add(
+            title="robots.txt discloses administration or internal paths",
+            category="attack surface",
+            host=url,
+            severity="Low",
+            confidence="confirmed",
+            evidence=f"{robots.get('url', url + '/robots.txt')} disallows: {shown}",
+            what="The file meant to keep crawlers away lists the paths the owner considers sensitive.",
+            why="robots.txt is public by design, so it also works as a shortlist for anyone looking for admin panels or internal tooling.",
+            impact="It removes the guesswork from finding management interfaces; the real risk depends on what answers there.",
+            verify=f"curl -s {robots.get('url', url + '/robots.txt')}  and read the Disallow lines",
+            recommendation="Keep robots.txt free of sensitive paths and protect those paths with authentication and network controls instead.",
+        )
 
     def _rule_cors(self, host: Mapping[str, Any]) -> None:
         """Report a permissive CORS answer from the single probe request."""
@@ -488,8 +608,13 @@ class Analyzer:
 
     def _rule_sensitive_names(self, snapshot: Mapping[str, Any]) -> None:
         """Point out subdomains whose name suggests a non-production surface."""
+        live = {str(name).lower() for name in snapshot.get("live_subdomains", []) or []}
         reported = 0
         for name in snapshot.get("subdomains", []) or []:
+            # A host that still resolves is reported by the liveness rule with a
+            # higher severity, so this rule stays quiet for it.
+            if str(name).lower() in live:
+                continue
             label = str(name).split(".", 1)[0].lower()
             if not any(hint in label for hint in self.sensitive_hints):
                 continue
@@ -573,8 +698,12 @@ class Analyzer:
         )
 
     def _rule_dmarc(self, snapshot: Mapping[str, Any]) -> None:
-        """Report a missing DMARC record."""
+        """Report a missing DMARC record, only when the lookup actually ran."""
         if str(snapshot.get("dmarc", "") or "").strip():
+            return
+        # ``dmarc_checked`` is False when DNS was disabled or the lookup never
+        # completed; claiming the record is missing then would be a false positive.
+        if not snapshot.get("dmarc_checked"):
             return
         domain = str(snapshot.get("target", ""))
         self._add(
@@ -667,3 +796,15 @@ def _hostname(url: str) -> str:
     value = url.split("://", 1)[-1]
     value = value.split("/", 1)[0]
     return value.split(":", 1)[0]
+
+
+def _mask_cookie(raw: str) -> str:
+    """Keep a cookie's name and attributes, mask its value.
+
+    A session cookie value in a report is a leaked credential, so the report
+    shows ``name=[…]`` followed by the attributes the rules are about.
+    """
+    name, _, rest = raw.partition("=")
+    attributes = rest.split(";", 1)[1].strip() if ";" in rest else ""
+    masked = f"{name.strip()}=[…]"
+    return f"{masked}; {attributes}" if attributes else masked

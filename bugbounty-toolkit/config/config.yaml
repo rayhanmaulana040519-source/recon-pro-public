@@ -8,7 +8,7 @@
 
 project:
   name: "Passive Bug Bounty Toolkit"
-  version: "2.0.0"
+  version: "2.1.0"
   author: "rey"
 
 # -----------------------------------------------------------------------------
@@ -76,6 +76,16 @@ collectors:
   http_headers: true
   max_hosts: 25            # cap on hosts probed per target
   max_subdomains: 2000     # cap on names kept from all sources combined
+
+  # One TLS handshake per probed host reads the certificate actually served
+  # (issuer, dates, trust) and the negotiated protocol version. That is the only
+  # way to see an expired or mismatched certificate on the wire. Like DNS, the
+  # handshake leaves from this host and cannot use the HTTP proxy.
+  tls_probe: true
+
+  # Read the site's own /robots.txt once per host and record the paths it
+  # disallows. Only that one standard file is fetched; no path is guessed.
+  robots_txt: true
 
   # Wayback Machine CDX index (web.archive.org): archived URLs and the
   # hostnames they belonged to. Free, no API key. Archived URLs are a passive
@@ -175,6 +185,28 @@ analysis:
     - "grafana"
     - "kibana"
     - "phpmyadmin"
+
+  # Fragments in a robots.txt Disallow path that usually mean management,
+  # internal tooling or a non-production surface.
+  sensitive_path_hints:
+    - "admin"
+    - "internal"
+    - "backup"
+    - "private"
+    - "config"
+    - "secret"
+    - "debug"
+    - "staging"
+    - "dev"
+    - "test"
+    - "database"
+    - "sql"
+    - "upload"
+    - "api"
+    - "graphql"
+    - "phpmyadmin"
+    - "wp-admin"
+    - "server-status"
 
 # -----------------------------------------------------------------------------
 # DATA — where snapshots are kept. One JSON file per run, per target.

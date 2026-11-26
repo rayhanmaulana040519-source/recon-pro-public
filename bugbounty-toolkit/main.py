@@ -16,6 +16,7 @@ No stage fuzzes, brute-forces, guesses paths or sends payloads.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,12 +35,27 @@ from modules.tech_detector import TechDetector
 from utils.http import HttpClient
 from utils.logger import setup_logger
 
-DEFAULT_CONFIG = "config/config.yaml"
+# Paths are anchored on the toolkit folder, so the command works from any
+# directory instead of only from the folder itself.
+TOOLKIT_ROOT = Path(__file__).resolve().parent
+DEFAULT_CONFIG = TOOLKIT_ROOT / "config" / "config.yaml"
 TOOL_NAME = "Passive Bug Bounty Toolkit"
+
+# Config keys whose value is a path that must resolve against TOOLKIT_ROOT.
+PATH_KEYS: dict[str, tuple[str, ...]] = {
+    "data": ("history_dir",),
+    "report": ("output_dir", "markdown_template"),
+    "logging": ("file",),
+    "scope": ("history_file", "extra_scope_file"),
+    "notify": ("alerts_file",),
+}
 
 
 def load_config(path: Path) -> dict[str, Any]:
     """Load and validate the YAML configuration.
+
+    Every path inside the file is rewritten to an absolute path under the
+    toolkit folder, so the toolkit behaves the same from any working directory.
 
     Args:
         path: Path to ``config.yaml``.
@@ -58,7 +74,35 @@ def load_config(path: Path) -> dict[str, Any]:
         sys.exit(f"ERROR: could not read {path}: {error}")
     if not isinstance(raw, dict):
         sys.exit(f"ERROR: {path} must contain a YAML mapping")
-    return raw
+    return _resolve_paths(raw)
+
+
+def _resolve_paths(config: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite the configured relative paths to absolute ones under the toolkit."""
+    for section_name, keys in PATH_KEYS.items():
+        section = config.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        for key in keys:
+            value = section.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            candidate = Path(os.path.expanduser(value.strip()))
+            section[key] = candidate if candidate.is_absolute() else (TOOLKIT_ROOT / candidate)
+    return config
+
+
+def print_scope(checker: ScopeChecker) -> None:
+    """List the domains this installation may touch, without sending anything."""
+    domains = sorted(set(checker.in_scope))
+    if not domains:
+        print("Scope kosong. Tambahkan domain ke scope.in_scope di config.yaml.")
+        return
+    print("Domain dalam scope ({}):".format(len(domains)))
+    for domain in domains:
+        print("  - {}".format(domain))
+    print("")
+    print("Jalankan: python3 main.py <domain>   atau   python3 main.py --all")
 
 
 def collect(
@@ -115,6 +159,7 @@ def run_target(
     config_path: Path,
     logger: Any,
     dry_run: bool,
+    checker: ScopeChecker | None = None,
 ) -> dict[str, Any]:
     """Run the whole pipeline for one target and return a result summary.
 
@@ -124,12 +169,13 @@ def run_target(
         config_path: Path of the config file, recorded in the report.
         logger: Logger for progress.
         dry_run: When true, stop after the scope decision.
+        checker: Reuse an existing scope checker instead of building a new one.
 
     Returns:
         ``{"target": str, "allowed": bool, "findings": [...], "reports": {...}}``.
     """
     project = config.get("project", {}) or {}
-    checker = ScopeChecker(config, logger)
+    checker = checker or ScopeChecker(config, logger)
 
     try:
         domain = checker.assert_in_scope(target)
@@ -139,7 +185,11 @@ def run_target(
 
     logger.info("scope accepted for %s", domain)
     if dry_run:
-        logger.info("dry run: would collect crt.sh, Wayback CDX, OTX, DNS and RDAP for %s", domain)
+        logger.info(
+            "dry run: would collect every passive source for %s (CT logs, Wayback, Common Crawl, "
+            "OTX, Anubis, RapidDNS, DNS, RDAP)",
+            domain,
+        )
         logger.info("dry run: would send one GET per host (max %s hosts)", (config.get("collectors", {}) or {}).get("max_hosts", 25))
         logger.info("dry run: no request was sent and no report was written")
         return {"target": domain, "allowed": True, "findings": [], "reports": {}}
@@ -147,7 +197,7 @@ def run_target(
     with HttpClient(config, logger) as http:
         snapshot = collect(domain, config, http, logger)
 
-        history = HistoryManager(Path((config.get("data", {}) or {}).get("history_dir", "data/history")), logger)
+        history = HistoryManager(Path((config.get("data", {}) or {}).get("history_dir", TOOLKIT_ROOT / "data" / "history")), logger)
         previous = history.load_latest(domain)
         changes = history.diff(previous, snapshot)
         history.save(domain, snapshot)
@@ -163,13 +213,15 @@ def run_target(
             "config": str(config_path),
             "previous_snapshot": (previous or {}).get("_snapshot_file", "none"),
             "proxy": "enabled" if http.proxies else "disabled (direct from this host)",
-            "dns_note": "DNS lookups are not proxied and leave from this host; crt.sh, RDAP and HTTP probes use the configured proxy when enabled.",
+            "dns_note": "DNS lookups and the TLS handshake are not proxied and leave from this host; crt.sh, RDAP and HTTP probes use the configured proxy when enabled.",
             "methodology": [
                 "Certificate transparency (crt.sh and Cert Spotter) for subdomains and certificate dates.",
                 "Wayback Machine CDX index (web.archive.org) and the newest Common Crawl index for archived URLs.",
                 "AlienVault OTX, Anubis and RapidDNS passive datasets for historical subdomains.",
                 "DNS liveness check over the discovered names, an AXFR attempt and DMARC/SPF policy data.",
                 "Same-origin JavaScript intelligence: exposed source maps and hard-coded credentials.",
+                "One TLS handshake per probed host for the certificate actually served and its protocol version.",
+                "The site's own robots.txt, read once for the paths it discloses.",
                 "Public DNS records (A, AAAA, CNAME, MX, TXT, NS, SOA) via the system resolver.",
                 "Public registration data through RDAP (no WHOIS port 43 traffic).",
                 "One HTTP GET per host for headers, technology, cookies and a single CORS probe.",
@@ -193,8 +245,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description="Passive, scope-checked bug-bounty reconnaissance with explained reports.",
         epilog="Only use this against programs that explicitly authorize the target.",
     )
-    parser.add_argument("targets", nargs="+", help="Apex domain(s), e.g. example.com")
-    parser.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=f"config file (default: {DEFAULT_CONFIG})")
+    parser.add_argument("targets", nargs="*", help="apex domain(s), e.g. example.com; empty lists the scope")
+    parser.add_argument("-c", "--config", default=str(DEFAULT_CONFIG), help=f"config file (default: {DEFAULT_CONFIG})")
+    parser.add_argument("--all", action="store_true", help="run every domain listed in the scope")
+    parser.add_argument("--list", action="store_true", help="list the in-scope domains and exit")
     parser.add_argument("--dry-run", action="store_true", help="check scope and show the plan without any request")
     parser.add_argument("--no-http", action="store_true", help="skip the per-host HTTP probe (pure DNS/CT/RDAP)")
     parser.add_argument("-q", "--quiet", action="store_true", help="only warnings and errors on the console")
@@ -210,6 +264,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.no_http:
         collectors = config.setdefault("collectors", {})
         collectors["http_headers"] = False
+        collectors["js_intel"] = False
+        collectors["robots_txt"] = False
     if args.quiet:
         config.setdefault("logging", {})["level"] = "WARNING"
         config.setdefault("notify", {})["console"] = False
@@ -217,16 +273,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging_cfg = config.get("logging", {}) or {}
     logger = setup_logger(
         name="bugbounty",
-        log_file=logging_cfg.get("file", "logs/toolkit.log"),
+        log_file=logging_cfg.get("file", str(TOOLKIT_ROOT / "logs" / "toolkit.log")),
         level=logging_cfg.get("level", "INFO"),
         max_bytes=int(logging_cfg.get("max_bytes", 2_000_000)),
         backups=int(logging_cfg.get("backups", 3)),
     )
 
-    logger.info("starting %s with %d target(s)", TOOL_NAME, len(args.targets))
+    checker = ScopeChecker(config, logger)
+    if args.list:
+        print_scope(checker)
+        return 0
+
+    targets = [str(item) for item in args.targets]
+    if not targets and not args.all:
+        print_scope(checker)
+        logger.info("no target given: pass a domain, or --all to run every in-scope domain")
+        return 0
+    if args.all:
+        targets = sorted(set(checker.in_scope))
+        if not targets:
+            logger.error("no in-scope domain is configured; add one to config.yaml")
+            return 2
+        logger.info("running every in-scope domain: %d target(s)", len(targets))
+
+    logger.info("starting %s with %d target(s)", TOOL_NAME, len(targets))
     exit_code = 0
-    for target in args.targets:
-        result = run_target(target, config, config_path, logger, args.dry_run)
+    for target in targets:
+        result = run_target(target, config, config_path, logger, args.dry_run, checker)
         if not result["allowed"]:
             exit_code = 2  # at least one target was refused
 

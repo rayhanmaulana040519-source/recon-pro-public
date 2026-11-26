@@ -183,6 +183,11 @@
     const dmarcNode = $("#passiveDmarc");
     text(dmarcNode, summary.dmarc ? "AKTIF" : "HILANG");
     if (dmarcNode) dmarcNode.classList.toggle("dmarc-missing", !summary.dmarc);
+    const tlsFailed = Number(summary.tls_failed) || 0;
+    const tlsNode = $("#passiveTls");
+    text(tlsNode, tlsFailed);
+    if (tlsNode) tlsNode.classList.toggle("axfr-hot", tlsFailed > 0);
+    text($("#passiveRobots"), Number(summary.robots_paths) || 0);
     text($("#passiveNote"), summary.axfr
       ? `AXFR berhasil di ${summary.axfr_ns || "nameserver"} — zona DNS bocor. Laporkan ke program dan tutup transfer.`
       : "Panel memakai snapshot toolkit terbaru dari data/history.");

@@ -75,26 +75,32 @@ class JsIntel:
             name = str(host.get("host", "")).strip().lower()
             if not name:
                 continue
-            entry = self.scan_host(name)
+            entry = self.scan_host(name, str(host.get("url") or ""))
             if entry:
                 results.append(entry)
         if results:
             self.logger.info("js intel: %d host(s) scanned", len(results))
         return results
 
-    def scan_host(self, name: str) -> dict[str, Any] | None:
-        """Fetch ``https://name``, read its scripts and describe what was found.
+    def scan_host(self, name: str, probed_url: str = "") -> dict[str, Any] | None:
+        """Read the host's page, follow its same-origin scripts, describe them.
 
         Args:
             name: The probed hostname, already scope-checked by the caller.
+            probed_url: The URL the probe reached this host on, when known, so an
+                HTTP-only host is read over the scheme that actually answered.
 
         Returns:
             ``{"host", "js_scanned", "source_maps", "secrets"}`` or ``None``
             when the root page is unreachable or links no same-origin script.
         """
-        origin = f"https://{name}"
-        page = self.http.get(origin, allow_redirects=True)
-        if page is None or not (page.text or "").strip():
+        page = None
+        for origin in self._origins(name, probed_url):
+            page = self.http.get(origin, allow_redirects=True)
+            if page is not None and (page.text or "").strip():
+                break
+            page = None
+        if page is None:
             return None
 
         host = (urlsplit(str(page.url)).hostname or "").lower() or name
@@ -145,6 +151,17 @@ class JsIntel:
         }
 
     # -- helpers --------------------------------------------------------------
+    @staticmethod
+    def _origins(name: str, probed_url: str) -> list[str]:
+        """Candidate page URLs: the probed scheme first, then HTTPS and HTTP."""
+        origins: list[str] = []
+        if probed_url.startswith(("http://", "https://")):
+            origins.append(probed_url)
+        for origin in (f"https://{name}", f"http://{name}"):
+            if origin not in origins:
+                origins.append(origin)
+        return origins
+
     @staticmethod
     def _same_host(url: str, host: str) -> bool:
         """True when ``url`` belongs to the probed host itself."""
