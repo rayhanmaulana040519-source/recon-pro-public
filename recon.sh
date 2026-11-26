@@ -79,6 +79,8 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --failures [domain]   hanya tool/stage yang gagal atau skip
   bash recon.sh --tools               tool + toolkit Python terpasang
   bash recon.sh --web                 jalankan dashboard lokal (token dibuat otomatis)
+  bash recon.sh --web-restart         stop + jalankan dashboard di background
+  bash recon.sh --web-stop            hentikan dashboard yang jalan
   bash recon.sh --telegram            atur token, chat ID & user bot, lalu tes
   bash recon.sh --notify-test         kirim ulang pesan tes ke Telegram
   bash recon.sh --stop-bot            hentikan bot yang sedang jalan
@@ -568,6 +570,62 @@ set_api_key() {
     printf '  Dipakai oleh collector Chaos dan binary `chaos` (env var yang sama).\n'
     printf '  Scan berikutnya langsung memakainya; tidak perlu restart apa pun.\n'
     return 0
+}
+
+# -------------------------------------------------------------------- web ----
+# Restarting used to mean finding the process by hand and starting it again in
+# a terminal that had to stay open. These helpers stop whatever runs the
+# dashboard and start it detached, logging to state/web.log.
+web_pids() {
+    pgrep -f "web_ui/server.py" 2>/dev/null || true
+}
+
+web_stop() {
+    local s=1 pids
+    pids=$(web_pids)
+    if [[ -z "$pids" ]]; then
+        info "Dashboard tidak sedang jalan."
+        return 0
+    fi
+    info "Menghentikan dashboard ..."
+    # shellcheck disable=SC2086
+    kill -TERM $pids 2>/dev/null || true
+    for (( s = 0; s < 8; s++ )); do
+        sleep 0.5
+        [[ -z "$(web_pids)" ]] && break
+    done
+    pids=$(web_pids)
+    if [[ -n "$pids" ]]; then
+        # shellcheck disable=SC2086
+        kill -KILL $pids 2>/dev/null || true
+    fi
+    ok "Dashboard dihentikan."
+    return 0
+}
+
+web_start() {
+    local scheme="http" port="${RECON_WEB_PORT:-8765}" i
+    [[ -f "${RECON_HOME%/}/state/tls/cert.pem" ]] && scheme="https"
+    mkdir -p "$STATE_DIR" 2>/dev/null || true
+    info "Menjalankan dashboard di background (log: ${STATE_DIR}/web.log) ..."
+    nohup bash "${SCRIPT_DIR}/web_ui/start.sh" >>"${STATE_DIR}/web.log" 2>&1 &
+    disown 2>/dev/null || true
+    for i in $(seq 1 40); do
+        if curl -k -s -o /dev/null --max-time 3 "${scheme}://127.0.0.1:${port}/" 2>/dev/null; then
+            ok "Dashboard siap: ${scheme}://127.0.0.1:${port}"
+            [[ -s "${STATE_DIR}/web_token" ]] && printf '  Token : %s\n' "$(cat "${STATE_DIR}/web_token")"
+            printf '  Hentikan: bash recon.sh --web-stop\n'
+            return 0
+        fi
+        sleep 0.5
+    done
+    warn "Dashboard belum menjawab; lihat ${STATE_DIR}/web.log"
+    return 1
+}
+
+web_restart() {
+    web_stop
+    web_start
 }
 
 show_tools() {
@@ -1330,6 +1388,8 @@ while (( $# )); do
         --max)        PROFILE="max" ;;
         --tools|--check|-c) ACTION="tools" ;;
         --web|--dashboard) ACTION="web" ;;
+        --web-restart) ACTION="webrestart" ;;
+        --web-stop)   ACTION="webstop" ;;
         --telegram)   ACTION="telegram" ;;
         --notify-test) ACTION="notify" ;;
         --stop-bot)   ACTION="stopbot" ;;
@@ -1418,6 +1478,14 @@ case "$ACTION" in
         ;;
     web)
         exec "$BASH_BIN" "$SCRIPT_DIR/web_ui/start.sh"
+        ;;
+    webstop)
+        web_stop
+        exit $?
+        ;;
+    webrestart)
+        web_restart
+        exit $?
         ;;
     report)
         show_report_detail "$DOMAIN"
