@@ -94,6 +94,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --clean [folder]      lihat file sampah (arsip unduhan, output lama)
   bash recon.sh --clean --apply       hapus file sampah yang terdaftar tadi
   bash recon.sh --disk                apa yang benar-benar memenuhi disk
+  bash recon.sh --doctor              kesehatan sistem: update, tool, key, TLS, dashboard
   bash recon.sh --ssl [host]          buat sertifikat TLS untuk dashboard (HTTPS)
   bash recon.sh --api-key [NAMA]      simpan API key collector (default PDCP_API_KEY)
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
@@ -1020,6 +1021,156 @@ update_repo() {
     return 0
 }
 
+# ----------------------------------------------------------------- doctor ----
+# One screen of health: system, storage, updates, tools, keys, TLS, dashboard.
+# Read-only; nothing here changes the machine.
+doctor_line() {
+    local color="$NC"
+    case "$3" in
+        ok) color="$GREEN" ;;
+        warn|fail) color="$YELLOW"; DOCTOR_WARN=$((DOCTOR_WARN + 1)) ;;
+    esac
+    printf '  %b%-14s%b %s\n' "$color" "$1" "$NC" "$2"
+}
+
+show_doctor() {
+    local os_name load mem_total mem_avail swap_total swap_free disk_use port
+    local upd_total upd_sec missing_tools py key_names keys_have cert cert_end cert_days
+    local scheme code pid domain
+    DOCTOR_WARN=0
+    port="${RECON_WEB_PORT:-8765}"
+
+    printf '%b=== DOCTOR ===%b\n' "${BOLD}${CYAN}" "$NC"
+
+    if [[ -r /etc/os-release ]]; then
+        os_name=$(. /etc/os-release >/dev/null 2>&1; printf '%s' "${PRETTY_NAME:-${NAME:-linux}}")
+    else
+        os_name=$(uname -sr)
+    fi
+    load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
+    doctor_line "Sistem" "${os_name:-?} · load ${load:-?}" info
+    if [[ -r /proc/meminfo ]]; then
+        mem_total=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+        mem_avail=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+        swap_total=$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)
+        swap_free=$(awk '/^SwapFree:/ {print $2}' /proc/meminfo)
+        if [[ -n "$mem_total" && -n "$mem_avail" ]] && (( mem_total > 0 )); then
+            local used_mb avail_mb swap_mb
+            used_mb=$(( (mem_total - mem_avail) / 1024 ))
+            avail_mb=$(( mem_avail / 1024 ))
+            swap_mb=$(( (swap_total - swap_free) / 1024 ))
+            if (( avail_mb < 200 )); then
+                doctor_line "RAM" "${used_mb}MB dipakai · ${avail_mb}MB tersedia · swap ${swap_mb}MB" warn
+            else
+                doctor_line "RAM" "${used_mb}MB dipakai · ${avail_mb}MB tersedia · swap ${swap_mb}MB" ok
+            fi
+        fi
+    fi
+
+    disk_use=$(df -P / 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
+    if [[ -n "$disk_use" ]]; then
+        if (( disk_use >= 85 )); then
+            doctor_line "Disk" "${disk_use}% terpakai — bash recon.sh --disk" warn
+        else
+            doctor_line "Disk" "${disk_use}% terpakai" ok
+        fi
+    fi
+
+    if command -v apt-get >/dev/null 2>&1; then
+        upd_total=$(timeout 40 apt list --upgradable 2>/dev/null | tail -n +2 | grep -c . || true)
+        upd_sec=$(timeout 40 apt list --upgradable 2>/dev/null | grep -c 'security' || true)
+        if [[ -n "$upd_sec" ]] && (( upd_sec > 0 )); then
+            doctor_line "Update apt" "${upd_total:-0} paket, ${upd_sec} security — sudo apt-get upgrade" warn
+        else
+            doctor_line "Update apt" "${upd_total:-0} paket tertunda" ok
+        fi
+    fi
+
+    missing_tools=""
+    for py in curl jq python3 subfinder httpx nuclei dnsx tlsx katana waybackurls gau dalfox ffuf nmap; do
+        command -v "$py" >/dev/null 2>&1 || missing_tools="${missing_tools} ${py}"
+    done
+    if [[ -n "$missing_tools" ]]; then
+        doctor_line "Tool inti" "belum ada:${missing_tools}" warn
+    else
+        doctor_line "Tool inti" "lengkap" ok
+    fi
+
+    if toolkit_deps_ready; then
+        doctor_line "Toolkit pasif" "venv + requests/PyYAML/dnspython ok" ok
+    elif toolkit_ready; then
+        doctor_line "Toolkit pasif" "dependensi kurang — bash setup.sh --python-only" warn
+    else
+        doctor_line "Toolkit pasif" "belum siap — bash setup.sh --python-only" warn
+    fi
+
+    key_names=""
+    keys_have=0
+    local name
+    for name in PDCP_API_KEY OTX_API_KEY CERTSPOTTER_API_KEY; do
+        if declare -p "$name" >/dev/null 2>&1; then
+            keys_have=$((keys_have + 1))
+            key_names="${key_names} ${name}"
+        fi
+    done
+    if (( keys_have > 0 )); then
+        doctor_line "API key" "${keys_have} terpasang:${key_names}" ok
+    else
+        doctor_line "API key" "belum ada — bash recon.sh --api-key" info
+    fi
+
+    cert="${RECON_HOME%/}/state/tls/cert.pem"
+    scheme="http"
+    if [[ -f "$cert" ]]; then
+        scheme="https"
+        cert_end=$(openssl x509 -noout -enddate -in "$cert" 2>/dev/null | cut -d= -f2)
+        cert_days=""
+        if [[ -n "$cert_end" ]]; then
+            local end_epoch
+            end_epoch=$(date -d "$cert_end" +%s 2>/dev/null || true)
+            [[ -n "$end_epoch" ]] && cert_days=$(( (end_epoch - $(date +%s)) / 86400 ))
+        fi
+        if [[ -n "$cert_days" ]] && (( cert_days < 14 )); then
+            doctor_line "TLS" "sertifikat habis dalam ${cert_days} hari — bash recon.sh --ssl" warn
+        else
+            doctor_line "TLS" "aktif${cert_days:+, ${cert_days} hari lagi}" ok
+        fi
+    else
+        doctor_line "TLS" "belum ada sertifikat — bash recon.sh --ssl (opsional)" info
+    fi
+
+    code=$(curl -k -s -o /dev/null -w '%{http_code}' --max-time 5 "${scheme}://127.0.0.1:${port}/" 2>/dev/null || true)
+    if [[ "$code" == "200" ]]; then
+        doctor_line "Dashboard" "${scheme}://127.0.0.1:${port} menjawab 200" ok
+    elif [[ -n "$code" && "$code" != "000" ]]; then
+        doctor_line "Dashboard" "${scheme}://127.0.0.1:${port} menjawab ${code}" info
+    else
+        doctor_line "Dashboard" "tidak menjawab — bash recon.sh --web" info
+    fi
+
+    pid=$(tr -dc '0-9' < "$RECON_HOME/state/bot/bot.lock" 2>/dev/null)
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        doctor_line "Bot Telegram" "jalan (PID ${pid})" ok
+    else
+        doctor_line "Bot Telegram" "tidak jalan" info
+    fi
+
+    domain=$(latest_domain)
+    if [[ -n "$domain" && -d "$RUNS_DIR/$domain" ]]; then
+        doctor_line "Scan terakhir" "${domain} · $(ls -1t "$RUNS_DIR/$domain" 2>/dev/null | head -n 1)" ok
+    else
+        doctor_line "Scan terakhir" "belum ada run" info
+    fi
+
+    printf '\n'
+    if (( DOCTOR_WARN > 0 )); then
+        warn "${DOCTOR_WARN} hal perlu perhatian."
+    else
+        ok "Semua pemeriksaan lolos."
+    fi
+    return 0
+}
+
 # One-screen overview of the whole install.
 show_status() {
     local domain have=0 miss=0 t pf count=0 pid findings=0
@@ -1157,6 +1308,7 @@ while (( $# )); do
             ;;
         --apply)      CLEAN_APPLY=1 ;;
         --disk|--storage) ACTION="disk" ;;
+        --doctor|--health) ACTION="doctor" ;;
         --ssl|--tls)
             ACTION="ssl"
             if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
@@ -1250,6 +1402,10 @@ case "$ACTION" in
         ;;
     disk)
         show_disk
+        exit $?
+        ;;
+    doctor)
+        show_doctor
         exit $?
         ;;
     ssl)

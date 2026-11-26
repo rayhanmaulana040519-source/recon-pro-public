@@ -49,6 +49,7 @@ bash recon.sh --fix-tools             # lengkapi tool yang belum ada (arsenal + 
 bash recon.sh --clean                 # daftar file sampah (arsip unduhan, output lama)
 bash recon.sh --clean --apply         # hapus daftar itu, dengan konfirmasi
 bash recon.sh --disk                  # lihat apa yang memenuhi penyimpanan
+bash recon.sh --doctor                # kesehatan: update, tool, key, TLS, dashboard
 bash recon.sh --ssl example.com       # sertifikat TLS untuk dashboard (HTTPS)
 bash recon.sh --api-key               # simpan API key collector (PDCP_API_KEY / OTX / Cert Spotter)
 bash recon.sh --no-setup example.com  # jangan pasang apa pun, langsung scan
