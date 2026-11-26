@@ -71,6 +71,38 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _secret(name: str) -> str:
+    """Read an API key from the environment, else from the protected key file.
+
+    The launcher writes collector keys to ``$RECON_PRO_HOME/state/api_keys.env``
+    (mode 600) so cron and the dashboard's subprocess see the same values
+    without a shell profile. The environment always wins.
+
+    Args:
+        name: Environment variable name, for example ``PDCP_API_KEY``.
+
+    Returns:
+        The key, or an empty string when it is not configured anywhere.
+    """
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    home = os.environ.get("RECON_PRO_HOME") or os.path.join(os.path.expanduser("~"), "recon_pro")
+    path = os.path.join(home, "state", "api_keys.env")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, raw = line.partition("=")
+                if key.strip() == name:
+                    return raw.strip().strip("\"'")
+    except OSError:
+        pass
+    return ""
+
+
 class PassiveRecon:
     """Collects public data about one authorized apex domain.
 
@@ -302,7 +334,7 @@ class PassiveRecon:
 
         headers: dict[str, str] = {}
 
-        api_key = os.environ.get(self.otx_api_key_env, "").strip()
+        api_key = _secret(self.otx_api_key_env)
         if api_key:
             headers["X-OTX-API-KEY"] = api_key
 
@@ -341,7 +373,7 @@ class PassiveRecon:
             return result
 
         headers: dict[str, str] = {}
-        api_key = os.environ.get(self.certspotter_api_key_env, "").strip()
+        api_key = _secret(self.certspotter_api_key_env)
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
@@ -463,13 +495,12 @@ class PassiveRecon:
             self.logger.info("chaos disabled in config")
             return []
 
-        api_key = os.environ.get(self.chaos_api_key_env, "").strip()
+        api_key = _secret(self.chaos_api_key_env)
         if not api_key:
             self.logger.warning(
-                "chaos skipped: %s environment variable is empty. Create a free "
-                "Project Discovery Cloud API key at https://cloud.projectdiscovery.io "
-                "and export it as %s.",
-                self.chaos_api_key_env,
+                "chaos skipped: %s is not set. Create a free Project Discovery Cloud "
+                "API key at https://cloud.projectdiscovery.io, then run "
+                "`bash recon.sh --api-key` on the host to store it.",
                 self.chaos_api_key_env,
             )
             return []

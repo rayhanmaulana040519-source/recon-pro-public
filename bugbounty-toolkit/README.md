@@ -74,6 +74,7 @@ and installs the dependencies for you:
 cd ..
 bash setup.sh --python-only      # venv + requests, PyYAML, dnspython
 bash recon.sh --fix-tools        # semua tool yang belum ada (arsenal + Python)
+bash recon.sh --api-key          # simpan PDCP_API_KEY untuk collector Chaos
 bash recon.sh --passive example.com
 ```
 

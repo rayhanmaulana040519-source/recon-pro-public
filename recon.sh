@@ -42,6 +42,17 @@ TOOLKIT_DIR="${SCRIPT_DIR}/bugbounty-toolkit"
 TOOLKIT_SCOPE="${TOOLKIT_DIR}/data/extra_scope.txt"
 PASSIVE_REPORT=""
 
+# API keys for the passive collectors live in one protected file, so cron and
+# the dashboard's subprocess see them without a shell profile. It is parsed,
+# never sourced: a stray line in a data file must not run commands.
+API_KEYS_FILE="${STATE_DIR}/api_keys.env"
+if [[ -f "$API_KEYS_FILE" ]]; then
+    while IFS='=' read -r _key _value; do
+        [[ -z "${_key:-}" || "$_key" == \#* || ! "$_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && continue
+        export "$_key=$_value"
+    done <"$API_KEYS_FILE" 2>/dev/null || true
+fi
+
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RED='\033[0;31m'
 BOLD='\033[1m'; NC='\033[0m'
 
@@ -83,6 +94,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --clean --apply       hapus file sampah yang terdaftar tadi
   bash recon.sh --disk                apa yang benar-benar memenuhi disk
   bash recon.sh --ssl [host]          buat sertifikat TLS untuk dashboard (HTTPS)
+  bash recon.sh --api-key [NAMA]      simpan API key collector (default PDCP_API_KEY)
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
 
@@ -508,6 +520,38 @@ run_ssl() {
     fi
     fail "Gagal membuat sertifikat (lihat ${LOG_FILE})."
     return 1
+}
+
+# ---------------------------------------------------------------- api keys ---
+# The passive collectors read their keys from the environment; this keeps one
+# protected file so cron, the dashboard subprocess and manual runs all agree.
+set_api_key() {
+    local name="${1:-PDCP_API_KEY}" value tmp
+    case "$name" in
+        PDCP_API_KEY|OTX_API_KEY|CERTSPOTTER_API_KEY) ;;
+        *)
+            warn "Nama tidak dikenal: ${name}"
+            printf '  Yang dipakai toolkit: PDCP_API_KEY (Chaos), OTX_API_KEY, CERTSPOTTER_API_KEY\n'
+            return 1
+            ;;
+    esac
+    mkdir -p "$(dirname "$API_KEYS_FILE")" 2>/dev/null || true
+    printf 'Tempel %s (input disembunyikan): ' "$name"
+    read -rs value || value=""
+    printf '\n'
+    if [[ -z "$value" ]]; then
+        fail "Kosong; tidak ada yang disimpan."
+        return 1
+    fi
+    tmp=$(mktemp "${API_KEYS_FILE}.XXXXXX") || return 1
+    [[ -f "$API_KEYS_FILE" ]] && grep -v "^${name}=" "$API_KEYS_FILE" >"$tmp" 2>/dev/null
+    printf '%s=%s\n' "$name" "$value" >>"$tmp"
+    mv -f "$tmp" "$API_KEYS_FILE"
+    chmod 600 "$API_KEYS_FILE" 2>/dev/null || true
+    ok "${name} disimpan di ${API_KEYS_FILE} (mode 600)"
+    printf '  Dipakai oleh collector Chaos dan binary `chaos` (env var yang sama).\n'
+    printf '  Scan berikutnya langsung memakainya; tidak perlu restart apa pun.\n'
+    return 0
 }
 
 show_tools() {
@@ -1079,6 +1123,7 @@ NO_PASSIVE=0
 CLEAN_APPLY=0
 CLEAN_DIR="${HOME:-/root}"
 HOST_NAME=""
+KEY_NAME="PDCP_API_KEY"
 PROFILE=""
 
 while (( $# )); do
@@ -1101,6 +1146,13 @@ while (( $# )); do
             ACTION="ssl"
             if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
                 HOST_NAME="$2"
+                shift
+            fi
+            ;;
+        --api-key|--set-key)
+            ACTION="apikey"
+            if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
+                KEY_NAME="$2"
                 shift
             fi
             ;;
@@ -1187,6 +1239,10 @@ case "$ACTION" in
         ;;
     ssl)
         run_ssl "$HOST_NAME"
+        exit $?
+        ;;
+    apikey)
+        set_api_key "$KEY_NAME"
         exit $?
         ;;
     web)
