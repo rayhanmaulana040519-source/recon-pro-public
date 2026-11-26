@@ -55,6 +55,13 @@ CERTSPOTTER_URL = (
 # historically observed names, so their union finds hosts a single source misses.
 ANUBIS_URL = "https://jldc.me/anubis/subdomains/{domain}"
 RAPIDDNS_URL = "https://rapiddns.io/subdomain/{domain}?full=1"
+
+# Project Discovery Chaos: subdomains the community has observed for a domain.
+# Free, but every request needs a PDCP API key from
+# https://cloud.projectdiscovery.io, sent as the Authorization header. The key
+# is read from the environment variable named in the config.
+CHAOS_URL = "https://dns.projectdiscovery.io/dns/{domain}/subdomains"
+
 COMMONCRAWL_INDICES_URL = "https://index.commoncrawl.org/collinfo.json"
 COMMONCRAWL_INDEX_URL = "{index}?url=*.{domain}/*&output=json&limit={limit}"
 
@@ -92,6 +99,8 @@ class PassiveRecon:
         self.max_certspotter = int(collectors.get("max_certspotter_issuances", 100))
         self.enable_anubis = bool(collectors.get("anubis", True))
         self.enable_rapiddns = bool(collectors.get("rapiddns", True))
+        self.enable_chaos = bool(collectors.get("chaos", True))
+        self.chaos_api_key_env = str(collectors.get("chaos_api_key_env", "PDCP_API_KEY") or "")
         self.enable_commoncrawl = bool(collectors.get("commoncrawl", True))
         self.max_commoncrawl_urls = int(collectors.get("max_commoncrawl_urls", 200))
         self.enable_dns_live = bool(collectors.get("dns_live_check", True))
@@ -436,6 +445,62 @@ class PassiveRecon:
         self.logger.info("anubis: %d hostname(s)", len(names))
         return sorted(names)
 
+    # -- Project Discovery Chaos ----------------------------------------------
+    def chaos_subdomains(self, domain: str) -> list[str]:
+        """Read the Chaos dataset and return the hostnames it lists.
+
+        Chaos needs a Project Discovery Cloud (PDCP) API key, which is free at
+        https://cloud.projectdiscovery.io. The key is read from the environment
+        variable named in the config and never written to a file.
+
+        Args:
+            domain: Apex domain, already scope-checked by the caller.
+
+        Returns:
+            Sorted list of hostnames; empty on failure or without a key.
+        """
+        if not self.enable_chaos:
+            self.logger.info("chaos disabled in config")
+            return []
+
+        api_key = os.environ.get(self.chaos_api_key_env, "").strip()
+        if not api_key:
+            self.logger.warning(
+                "chaos skipped: %s environment variable is empty. Create a free "
+                "Project Discovery Cloud API key at https://cloud.projectdiscovery.io "
+                "and export it as %s.",
+                self.chaos_api_key_env,
+                self.chaos_api_key_env,
+            )
+            return []
+
+        payload = self.http.get_json(
+            CHAOS_URL.format(domain=quote(domain)),
+            headers={"Authorization": api_key},
+            timeout=40,
+        )
+        if not isinstance(payload, dict):
+            self.logger.warning("chaos returned no usable data for %s", domain)
+            return []
+
+        suffix = "." + domain
+        names: set[str] = set()
+        for raw in payload.get("subdomains", []) or []:
+            name = str(raw).strip().strip(".").lower()
+            if not name:
+                continue
+            if name.startswith("*."):
+                name = name[2:]
+            if "." not in name:
+                # The API usually returns fully qualified names, but a bare
+                # label is still usable once the apex is appended.
+                name = name + suffix
+            if (name == domain or name.endswith(suffix)) and "." in name:
+                names.add(name)
+
+        self.logger.info("chaos: %d hostname(s)", len(names))
+        return sorted(names)
+
     # -- Common Crawl ---------------------------------------------------------
     def commoncrawl_urls(self, domain: str) -> list[str]:
         """Read the newest Common Crawl index and return archived URLs.
@@ -670,6 +735,11 @@ class PassiveRecon:
         if rapiddns_names:
             sources["rapiddns"] = len(rapiddns_names)
             subdomains.update(rapiddns_names)
+
+        chaos_names = self.chaos_subdomains(domain)
+        if chaos_names:
+            sources["chaos"] = len(chaos_names)
+            subdomains.update(chaos_names)
 
         commoncrawl = self.commoncrawl_urls(domain)
         if commoncrawl:

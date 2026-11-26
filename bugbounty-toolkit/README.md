@@ -14,7 +14,7 @@ check**, and nothing it does is more invasive than a browser visiting the site.
 | Certificate transparency | subdomains, issuers, `not_before` / `not_after` | crt.sh + Cert Spotter, public APIs |
 | Wayback archive | archived URLs, historical hostnames | Wayback Machine CDX (`web.archive.org`), free, no key |
 | Common Crawl | archived URLs from the world-scale web archive | newest Common Crawl CDX index, free, no key |
-| Passive DNS | historical subdomains | AlienVault OTX, Anubis, RapidDNS — free, no key |
+| Passive DNS | historical subdomains | AlienVault OTX, Anubis, RapidDNS — free, no key; Chaos needs a free PDCP key (`PDCP_API_KEY` from <https://cloud.projectdiscovery.io>) |
 | DNS policy | liveness of discovered names, AXFR attempt, DMARC/SPF | `dnspython`, read-only standard queries |
 | JavaScript intelligence | exposed source maps, hard-coded credentials | same-origin scripts of probed hosts, `modules/js_intel.py` |
 | DNS | A, AAAA, CNAME, MX, TXT, NS, SOA | system resolver via `dnspython` |

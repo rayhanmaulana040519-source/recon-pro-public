@@ -120,6 +120,13 @@ collectors:
   anubis: true             # Anubis dataset (jldc.me)
   rapiddns: true           # RapidDNS public index
 
+  # Project Discovery Chaos (dns.projectdiscovery.io): subdomains observed by
+  # the community. Free, but it needs a PDCP API key from
+  # https://cloud.projectdiscovery.io. The key is read from the environment
+  # variable named here and is never written to this file.
+  chaos: true
+  chaos_api_key_env: "PDCP_API_KEY"
+
   # Common Crawl: the world-scale web archive. Adds archived URLs alongside
   # the Wayback results.
   commoncrawl: true

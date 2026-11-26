@@ -193,6 +193,7 @@ class ReportGenerator:
             f"| — from OTX passive DNS | {sources.get('otx', 'n/a')} |",
             f"| — from Anubis | {sources.get('anubis', 'n/a')} |",
             f"| — from RapidDNS | {sources.get('rapiddns', 'n/a')} |",
+            f"| — from Chaos (PDCP key) | {sources.get('chaos', 'n/a')} |",
             f"| Archived URLs (Wayback + Common Crawl) | {len(snapshot.get('archived_urls', []) or [])} |",
             f"| — from Common Crawl | {sources.get('commoncrawl_urls', 'n/a')} |",
             f"| Hosts probed over HTTP | {len(hosts)} |",
