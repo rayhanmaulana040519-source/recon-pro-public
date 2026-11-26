@@ -690,18 +690,26 @@ install_wpscan() {
         ok "wpscan"
         return 0
     fi
-    if ! have gem; then
-        info "Memasang Ruby (prasyarat wpscan) ..."
-        install_apt_package ruby || true
-        install_apt_package ruby-dev || true
-    fi
+    # wpscan builds native extensions (nokogiri, ethon, ffi), and a Ruby without
+    # its development headers cannot build any of them ("mkmf.rb can't find
+    # header files for ruby"). Install both even when `gem` already exists,
+    # which is the usual case on a minimal image.
+    install_apt_package ruby || true
+    install_apt_package ruby-dev || true
+    # A distro-built nokogiri saves the heaviest native build entirely.
+    install_apt_package ruby-nokogiri || true
     if ! have gem; then
         warn "wpscan dilewati: Ruby gem belum tersedia (pasang: sudo apt-get install -y ruby ruby-dev build-essential)"
+        return 0
+    fi
+    if ! ruby -rmkmf -e 'exit 0' >/dev/null 2>&1; then
+        warn "wpscan dilewati: header Ruby (ruby.h/mkmf) tidak ditemukan; pasang: sudo apt-get install -y ruby-dev"
         return 0
     fi
     # wpscan needs to compile native extensions (nokogiri, ethon, ffi); without
     # these headers `gem install` fails on a minimal VPS.
     local dep gem_log="${STATE_DIR}/wpscan-gem.log"
+    : >"$gem_log"
     for dep in build-essential pkg-config libcurl4-openssl-dev libxml2-dev libxslt1-dev zlib1g-dev libsqlite3-dev libffi-dev libyaml-dev; do
         install_apt_package "$dep" || true
     done
@@ -713,7 +721,7 @@ install_wpscan() {
         aarch64|arm64) nokogiri_platform="arm64-linux" ;;
     esac
     local temp_swap=0
-    ensure_swap 1536 && temp_swap=1
+    ensure_swap 768 && temp_swap=1
     if [[ -n "$nokogiri_platform" ]]; then
         info "Memasang nokogiri pre-compiled (tanpa kompilasi) ..."
         run_root gem install --no-document --platform "$nokogiri_platform" nokogiri >>"$gem_log" 2>&1 \
@@ -750,8 +758,10 @@ install_wpscan() {
         return 0
     fi
     warn "wpscan gagal dipasang; ringkasan error:"
-    grep -iE '^ERROR|Error installing|error:|Killed|No space' "$gem_log" 2>/dev/null | head -n 8 \
-        | while IFS= read -r line; do printf '    %s\n' "$line"; done
+    printf '    Ruby: %s\n' "$(ruby -v 2>&1 | head -n 1)"
+    printf '    Gem : %s\n' "$(gem -v 2>&1 | head -n 1)"
+    grep -iE 'mkmf|ruby\.h|checking for .*\.h|Failed to build|can.t find|You have to install|^ERROR|Killed|No space' "$gem_log" 2>/dev/null \
+        | head -n 12 | while IFS= read -r line; do printf '    %s\n' "$line"; done
     printf '    Log lengkap: %s\n' "$gem_log"
     return 0
 }
