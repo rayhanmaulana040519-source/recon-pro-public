@@ -742,7 +742,7 @@ web_diag() {
 # Installs the dashboard as a systemd service so it survives logout, crashes
 # and reboots — the usual reason "the site is unreachable" after a VPS restart.
 web_install_service() {
-    local unit="/etc/systemd/system/recon-pro-web.service"
+    local unit="/etc/systemd/system/recon-pro-web.service" shell_env=""
     if (( EUID != 0 )); then
         fail "Perlu root: sudo bash recon.sh --web-install-service"
         return 1
@@ -750,6 +750,10 @@ web_install_service() {
     if ! command -v systemctl >/dev/null 2>&1; then
         fail "systemd tidak tersedia di mesin ini."
         return 1
+    fi
+    # Keep the terminal page if the operator runs this with the shell enabled.
+    if [[ "${RECON_WEB_ENABLE_SHELL:-}" == "1" ]]; then
+        shell_env="Environment=RECON_WEB_ENABLE_SHELL=1"
     fi
     cat >"$unit" <<EOF
 [Unit]
@@ -763,6 +767,7 @@ ExecStart=${BASH_BIN} ${SCRIPT_DIR}/web_ui/start.sh
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+${shell_env}
 
 [Install]
 WantedBy=multi-user.target
