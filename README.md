@@ -59,6 +59,7 @@ bash setup.sh --web-audit-only       # sqlmap, wafw00f, whatweb, nikto saja
 bash setup.sh --with-web-audit       # tambahkan tool audit web ke setup biasa
 bash setup.sh --with-arsenal         # tambah skipfish, gobuster, dirsearch, feroxbuster, arjun, wpscan, commix
 bash setup.sh --arsenal-only         # hanya paket arsenal di atas
+bash setup.sh --with-artex           # klon ARTEX (AI pentest; Docker + PostgreSQL, tidak dijalankan)
 bash setup.sh --python-only          # hanya venv + dependensi toolkit Python
 bash setup.sh --no-python            # tanpa toolkit Python
 ```

@@ -42,6 +42,7 @@ DO_TEMPLATES=1
 DO_PYTHON=1
 DO_WEB_AUDIT=0
 DO_ARSENAL=0
+DO_ARTEX=0
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RED='\033[0;31m'; NC='\033[0m'
 
@@ -65,6 +66,7 @@ recon_pro setup — pasang semua yang dibutuhkan lalu cek hasilnya
   bash setup.sh --with-arsenal   tambah skipfish, gobuster, dirsearch, feroxbuster,
                                  arjun, wpscan, commix (butuh pipx/gem/cargo)
   bash setup.sh --arsenal-only   hanya paket arsenal, tanpa tool pipeline lain
+  bash setup.sh --with-artex     klon ARTEX (platform AI pentest; Docker + PostgreSQL)
   bash setup.sh --no-python     lewati toolkit Python pasif
   bash setup.sh --python-only   hanya siapkan toolkit Python
 
@@ -80,6 +82,7 @@ while (( $# )); do
         --with-x8)     DO_X8=1 ;;
         --with-web-audit) DO_WEB_AUDIT=1 ;;
         --with-arsenal)   DO_ARSENAL=1 ;;
+        --with-artex)     DO_ARTEX=1 ;;
         --arsenal-only)
             DO_ARSENAL=1
             DO_PACKAGES=0
@@ -540,35 +543,61 @@ install_pipx_tool() {
         ok "$tool"
         return 0
     fi
+    local tool_log="${STATE_DIR}/${tool}-install.log"
+
     if ! have pipx; then
         info "Memasang pipx (prasyarat $tool) ..."
         install_apt_package pipx || true
     fi
-    if ! have pipx; then
-        warn "$tool dilewati: pipx belum tersedia (pasang: sudo apt-get install -y pipx)"
+    if have pipx; then
+        info "Memasang $tool lewat pipx ..."
+        if pipx install "$tool" >"$tool_log" 2>&1; then
+            # Link the console script into /usr/local/bin so every shell, cron
+            # job and the dashboard see it without sourcing .bashrc first.
+            local bin_dir
+            bin_dir=$(pipx environment --value PIPX_BIN_DIR 2>/dev/null || true)
+            [[ -n "$bin_dir" ]] || bin_dir="${HOME}/.local/bin"
+            if [[ -x "${bin_dir}/${tool}" ]]; then
+                run_root ln -sf "${bin_dir}/${tool}" "/usr/local/bin/${tool}" >>"$LOG_FILE" 2>&1 || true
+            fi
+            PATH="/usr/local/bin:${bin_dir}:${PATH}"
+            export PATH
+            if have "$tool"; then
+                ok "$tool"
+                return 0
+            fi
+        fi
+        warn "$tool lewat pipx gagal; mencoba venv terpisah ..."
+    fi
+
+    # pipx is not always installable (or its own venv machinery is broken).
+    # A plain venv under RECON_HOME installs the same console script.
+    if ! have python3 || ! python3 -c 'import venv' >/dev/null 2>&1; then
+        warn "$tool dilewati: python3-venv belum tersedia (pasang: sudo apt-get install -y python3-venv)"
         return 0
     fi
-    info "Memasang $tool lewat pipx ..."
-    if ! pipx install "$tool" >>"$LOG_FILE" 2>&1; then
-        warn "$tool gagal dipasang lewat pipx; lihat ${LOG_FILE}"
+    local venv="${RECON_HOME%/}/tools-venv"
+    if [[ ! -x "${venv}/bin/python" ]]; then
+        python3 -m venv "$venv" >>"$LOG_FILE" 2>&1 || {
+            warn "$tool: virtualenv gagal dibuat; lihat ${LOG_FILE}"
+            return 0
+        }
+    fi
+    info "Memasang $tool lewat venv ${venv} ..."
+    if ! "${venv}/bin/pip" install --quiet --upgrade "$tool" >>"$tool_log" 2>&1; then
+        warn "$tool gagal dipasang; ringkasan error:"
+        grep -iE 'ERROR|error:|No matching distribution|Killed' "$tool_log" 2>/dev/null | tail -n 4 \
+            | while IFS= read -r line; do printf '    %s\n' "$line"; done
+        printf '    Log lengkap: %s\n' "$tool_log"
         return 0
     fi
-    # Link the console script into /usr/local/bin so every shell, cron job and
-    # the dashboard see it without sourcing .bashrc first.
-    local bin_dir
-    bin_dir=$(pipx environment --value PIPX_BIN_DIR 2>/dev/null || true)
-    if [[ -z "$bin_dir" ]]; then
-        bin_dir="${HOME}/.local/bin"
-    fi
-    if [[ -x "${bin_dir}/${tool}" ]]; then
-        run_root ln -sf "${bin_dir}/${tool}" "/usr/local/bin/${tool}" >>"$LOG_FILE" 2>&1 || true
-    fi
-    PATH="/usr/local/bin:${bin_dir}:${PATH}"
+    run_root ln -sf "${venv}/bin/${tool}" "/usr/local/bin/${tool}" >>"$LOG_FILE" 2>&1 || true
+    PATH="/usr/local/bin:${venv}/bin:${PATH}"
     export PATH
     if have "$tool"; then
-        ok "$tool"
+        ok "$tool (venv)"
     else
-        warn "$tool terpasang di ${bin_dir} tetapi belum ada di PATH"
+        warn "$tool terpasang di ${venv}/bin tetapi belum ada di PATH"
     fi
     return 0
 }
@@ -623,6 +652,39 @@ install_feroxbuster() {
     return 0
 }
 
+# A native gem build (nokogiri) can want more memory than a small VPS has.
+# When less than $1 MB is free and we are root, add a 2 GB swap file so the
+# compiler is not killed. Returns 0 when it created one, so the caller removes it.
+ensure_swap() {
+    local want_mb="${1:-1536}" file="/swapfile_recon" avail_kb avail_mb
+    [[ -r /proc/meminfo ]] || return 1
+    avail_kb=$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo 2>/dev/null)
+    [[ -n "$avail_kb" ]] || return 1
+    avail_mb=$(( avail_kb / 1024 ))
+    (( avail_mb >= want_mb )) && return 1
+    (( EUID == 0 )) || return 1
+    if [[ -f "$file" ]] && swapon -s 2>/dev/null | grep -q "$file"; then
+        return 0
+    fi
+    info "RAM tersedia ${avail_mb}MB; menambah swap 2G sementara untuk kompilasi gem ..."
+    if [[ ! -f "$file" ]]; then
+        ( fallocate -l 2G "$file" 2>/dev/null || dd if=/dev/zero of="$file" bs=1M count=2048 ) >>"$LOG_FILE" 2>&1 || return 1
+        chmod 600 "$file" 2>/dev/null || true
+        mkswap "$file" >>"$LOG_FILE" 2>&1 || { rm -f "$file"; return 1; }
+    fi
+    swapon "$file" >>"$LOG_FILE" 2>&1 || { rm -f "$file"; return 1; }
+    info "Swap sementara aktif"
+    return 0
+}
+
+release_swap() {
+    local file="/swapfile_recon"
+    [[ -f "$file" ]] || return 0
+    swapoff "$file" >>"$LOG_FILE" 2>&1 || true
+    rm -f "$file"
+    return 0
+}
+
 install_wpscan() {
     if have wpscan; then
         ok "wpscan"
@@ -650,6 +712,8 @@ install_wpscan() {
         x86_64|amd64) nokogiri_platform="x86_64-linux" ;;
         aarch64|arm64) nokogiri_platform="arm64-linux" ;;
     esac
+    local temp_swap=0
+    ensure_swap 1536 && temp_swap=1
     if [[ -n "$nokogiri_platform" ]]; then
         info "Memasang nokogiri pre-compiled (tanpa kompilasi) ..."
         run_root gem install --no-document --platform "$nokogiri_platform" nokogiri >>"$gem_log" 2>&1 \
@@ -663,9 +727,15 @@ install_wpscan() {
         run_root gem install --no-document yajl-ruby -v 1.4.3 >>"$gem_log" 2>&1 || true
         run_root gem install --no-document wpscan >>"$gem_log" 2>&1 || true
     fi
+    (( temp_swap )) && release_swap
     if have wpscan; then
-        ok "wpscan"
-        return 0
+        # `which` alone is not proof: a broken gem can install a stub script.
+        if wpscan --version >>"$LOG_FILE" 2>&1; then
+            ok "wpscan"
+            return 0
+        fi
+        warn "wpscan terpasang tetapi gagal dijalankan:"
+        wpscan --version 2>&1 | tail -n 3 | while IFS= read -r line; do printf '    %s\n' "$line"; done
     fi
     # Some RubyGems setups put the executable outside PATH.
     local candidate
@@ -675,12 +745,12 @@ install_wpscan() {
             break
         fi
     done
-    if have wpscan; then
+    if have wpscan && wpscan --version >>"$LOG_FILE" 2>&1; then
         ok "wpscan"
         return 0
     fi
     warn "wpscan gagal dipasang; ringkasan error:"
-    grep -iE '^ERROR|Error installing|error:' "$gem_log" 2>/dev/null | head -n 6 \
+    grep -iE '^ERROR|Error installing|error:|Killed|No space' "$gem_log" 2>/dev/null | head -n 8 \
         | while IFS= read -r line; do printf '    %s\n' "$line"; done
     printf '    Log lengkap: %s\n' "$gem_log"
     return 0
@@ -768,9 +838,48 @@ install_arsenal_tools() {
     return 0
 }
 
+# ARTEX is an autonomous AI pentest platform (Go + embedded Next.js UI +
+# PostgreSQL, run with Docker Compose and an LLM key). It is a separate stack,
+# not a command-line tool, and it is heavy next to the dashboard and the bot, so
+# this only clones it and prints the remaining manual steps. It never starts it.
+install_artex() {
+    if (( ! DO_ARTEX )); then
+        return 0
+    fi
+    local dir="/opt/artex"
+    if ! have git; then
+        install_apt_package git || true
+    fi
+    if ! have git; then
+        warn "artex dilewati: git belum tersedia"
+        return 0
+    fi
+    if [[ ! -d "${dir}/.git" ]]; then
+        info "Mengunduh ARTEX (platform AI pentest, AGPL-3.0) ..."
+        if ! run_root git clone --depth 1 https://github.com/BaaRai/ARTEX "$dir" >>"$LOG_FILE" 2>&1; then
+            warn "artex: unduhan gagal; lihat ${LOG_FILE}"
+            return 0
+        fi
+    fi
+    if [[ -f "${dir}/.env.example" && ! -f "${dir}/.env" ]]; then
+        run_root cp "${dir}/.env.example" "${dir}/.env" >>"$LOG_FILE" 2>&1 || true
+        run_root chmod 600 "${dir}/.env" >>"$LOG_FILE" 2>&1 || true
+    fi
+    ok "ARTEX disalin ke ${dir}"
+    printf '    Langkah berikutnya (manual, tidak dijalankan otomatis):\n'
+    printf '      1. isi %s/.env: POSTGRES_PASSWORD, plus API key LLM (Anthropic/OpenAI)\n' "$dir"
+    printf '      2. pasang Docker bila belum ada: curl -fsSL https://get.docker.com | sh\n'
+    printf '      3. cd %s && docker compose up -d --build\n' "$dir"
+    printf '      4. buka http://127.0.0.1:8787, token setup: docker compose logs artex | grep "Setup token"\n'
+    printf '    Catatan: stack ini butuh PostgreSQL dan RAM besar; pada VPS kecil jalankan\n'
+    printf '    hanya bila yakin, karena bersamaan dengan dashboard dan bot.\n'
+    return 0
+}
+
 install_optional_extras() {
     install_web_audit_tools
     install_arsenal_tools
+    install_artex
     if (( ! DO_X8 )); then
         return 0
     fi
