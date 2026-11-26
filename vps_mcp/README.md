@@ -1,6 +1,6 @@
 # Recon Pro VPS MCP updater
 
-This optional service lets FreeMilk request one narrowly scoped operation on the VPS: run the existing `bash recon.sh --update`, then independently run `bash recon.sh --self-test`. It does not accept shell commands, paths, branch names, or other caller-supplied arguments. It refuses a dirty checkout, a branch other than `main`, an unexpected `origin`, and a detected Recon Pro scan. It does not restart the dashboard or bot.
+This optional service lets FreeMilk request one narrowly scoped operation on the VPS: run the existing `bash recon.sh --update`, then independently run `bash recon.sh --self-test`. It does not accept shell commands, paths, branch names, or other caller-supplied arguments. It refuses uncommitted changes to files git already tracks, a branch other than `main`, an unexpected `origin`, and a detected Recon Pro scan; untracked scan output under the data folders is left untouched and never blocks a fast-forward. It does not restart the dashboard or bot.
 
 The MCP app binds only to `127.0.0.1:8766`. Do not open port 8766 in the VPS firewall or expose it with another proxy. Cloudflare Tunnel is the only public route. The endpoint requires a locally generated bearer key; never put that key or the Cloudflare Tunnel token in chat, a URL, or a committed file.
 
@@ -76,6 +76,6 @@ Do not run Quick Tunnel and the persistent MCP service at the same time; both ne
 ## Operational limits and security
 
 - Keep the endpoint behind Cloudflare HTTPS and bearer authentication. The Cloudflare Tunnel token is a separate, powerful connector credential; keep it private and rotate it in Cloudflare if exposed.
-- The updater inherits the checkout owner's filesystem permissions. It refuses to run if GitHub credentials are unavailable, the working tree is dirty, a scan is active, or the branch/origin/upstream do not match the configured repository.
+- The updater inherits the checkout owner's filesystem permissions. It refuses to run if GitHub credentials are unavailable, a tracked file has uncommitted changes, a scan is active, or the branch/origin/upstream do not match the configured repository.
 - Calling the MCP tool updates only the local checkout and checks syntax; it does not restart a running dashboard, bot, or other process. Restart services only after any active scan finishes.
 - The local MCP service can be stopped independently from the Cloudflare connector. Do not stop the connector if other applications use the same tunnel.

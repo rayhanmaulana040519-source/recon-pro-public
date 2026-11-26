@@ -21,14 +21,17 @@ __pycache__/
 
 # ---------------------------------------------------------------------------
 # Passive toolkit runtime data (reports, snapshots, alerts).
-# The example report and the placeholders stay tracked.
+# Scan output arrives as directories, .jsonl ledgers and .json reports, so the
+# patterns cover everything inside these two folders instead of single names.
+# The example report and the placeholder stay tracked: ignoring "dir/*" rather
+# than "dir/" is what makes that possible, since git cannot re-include a file
+# whose parent directory is excluded.
 # ---------------------------------------------------------------------------
-bugbounty-toolkit/data/history/*.json
+bugbounty-toolkit/data/history/*
 bugbounty-toolkit/data/extra_scope.txt
-bugbounty-toolkit/reports/*.md
-bugbounty-toolkit/reports/alerts.jsonl
-!bugbounty-toolkit/reports/example-report.md
+bugbounty-toolkit/reports/*
 !bugbounty-toolkit/data/history/.gitkeep
+!bugbounty-toolkit/reports/example-report.md
 
 # ---------------------------------------------------------------------------
 # Scan workspaces, in case one is ever created inside the checkout.

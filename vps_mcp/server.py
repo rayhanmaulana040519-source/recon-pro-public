@@ -95,12 +95,31 @@ def _validate_checkout() -> str | None:
     if origin.returncode != 0 or origin.stdout.strip() not in EXPECTED_ORIGINS:
         return "Update ditolak: URL origin tidak cocok dengan repo Recon Pro yang diizinkan."
 
-    status = _git("status", "--porcelain", "--untracked-files=all")
+    # Scan output lands as untracked files under the data folders on every run,
+    # and untracked paths never conflict with a fast-forward. Only changes to
+    # files git already tracks can be lost or block the pull, so those are what
+    # the update refuses.
+    status = _git("status", "--porcelain", "--untracked-files=normal")
     if status.returncode != 0:
         return "Tidak dapat memeriksa status git; update dibatalkan."
-    if status.stdout.strip():
-        return "Update ditolak: working tree repo tidak bersih. Simpan atau tinjau perubahan lokal dahulu."
+    tracked = [
+        line.strip() for line in status.stdout.splitlines()
+        if line.strip() and not line.startswith("??")
+    ]
+    if tracked:
+        return (
+            "Update ditolak: ada perubahan pada file yang dilacak git ({}). "
+            "Commit atau kembalikan perubahan itu dulu."
+        ).format("; ".join(tracked[:5]))
     return None
+
+
+def _untracked_paths() -> list[str]:
+    """Untracked paths in the checkout, collapsed per directory."""
+    status = _git("status", "--porcelain", "--untracked-files=normal")
+    if status.returncode != 0:
+        return []
+    return [line[3:].strip() for line in status.stdout.splitlines() if line.startswith("??") and line[3:].strip()]
 
 
 def _run_update() -> str:
@@ -173,8 +192,14 @@ def _run_update() -> str:
         return "Repo telah diperbarui ke {}, tetapi self-test gagal.\n{}\n{}".format(
             commit, output, test.stdout[-MAX_OUTPUT:].strip()
         )
-    return "Update selesai: {} -> {}. Self-test lulus.\n{}".format(
-        before.stdout.strip(), commit, output or "Repo sudah versi terbaru."
+    note = ""
+    untracked = _untracked_paths()
+    if untracked:
+        note = "\nCatatan: {} path hasil scan tidak terlacak dan dibiarkan apa adanya ({}).".format(
+            len(untracked), ", ".join(untracked[:5])
+        )
+    return "Update selesai: {} -> {}. Self-test lulus.\n{}{}".format(
+        before.stdout.strip(), commit, output or "Repo sudah versi terbaru.", note
     )
 
 
@@ -182,8 +207,9 @@ def _run_update() -> str:
 def update_recon_pro() -> str:
     """Fast-forward the configured Recon Pro main checkout and run its self-test.
 
-    This operation refuses dirty checkouts, other origins/branches, and detected
-    scans. It does not restart the dashboard or bot. It accepts no command input.
+    This operation refuses uncommitted changes to tracked files, other
+    origins/branches, and detected scans; untracked scan output is left alone.
+    It does not restart the dashboard or bot. It accepts no command input.
     """
     return _run_update()
 
