@@ -52,6 +52,7 @@ bash recon.sh --disk                  # lihat apa yang memenuhi penyimpanan
 bash recon.sh --doctor                # kesehatan: update, tool, key, TLS, dashboard
 bash recon.sh --web-restart           # stop + jalankan dashboard di background
 bash recon.sh --ssl example.com       # sertifikat TLS untuk dashboard (HTTPS)
+bash recon.sh --no-ssl                # hapus sertifikat, kembali ke HTTP
 bash recon.sh --api-key               # simpan API key collector (PDCP_API_KEY / OTX / Cert Spotter)
 bash recon.sh --no-setup example.com  # jangan pasang apa pun, langsung scan
 bash recon.sh                         # menu interaktif (scan bertahap, settings, proxy)

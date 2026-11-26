@@ -99,6 +99,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --disk                apa yang benar-benar memenuhi disk
   bash recon.sh --doctor              kesehatan sistem: update, tool, key, TLS, dashboard
   bash recon.sh --ssl [host]          buat sertifikat TLS untuk dashboard (HTTPS)
+  bash recon.sh --no-ssl              hapus sertifikat, kembali ke HTTP biasa
   bash recon.sh --api-key [NAMA]      simpan API key collector (default PDCP_API_KEY)
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
@@ -650,6 +651,20 @@ show_web_token() {
     printf 'Kalau browser masih meminta login setelah ganti http -> https, itu wajar:\n'
     printf 'localStorage terpisah per origin, jadi masuk sekali lagi dengan token di atas.\n'
     return 0
+}
+
+# Removes the self-signed certificate and restarts the dashboard, so it serves
+# plain HTTP again. For access through an SSH tunnel that is already encrypted,
+# this avoids the browser warning without losing anything.
+ssl_off() {
+    local dir="${RECON_HOME%/}/state/tls"
+    if [[ -f "$dir/cert.pem" || -f "$dir/key.pem" ]]; then
+        rm -f "$dir/cert.pem" "$dir/key.pem"
+        ok "Sertifikat TLS dihapus; dashboard kembali ke HTTP."
+    else
+        info "TLS memang belum aktif."
+    fi
+    web_restart
 }
 
 show_tools() {
@@ -1398,6 +1413,7 @@ while (( $# )); do
                 shift
             fi
             ;;
+        --no-ssl|--ssl-off) ACTION="nossl" ;;
         --api-key|--set-key)
             ACTION="apikey"
             if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
@@ -1495,6 +1511,10 @@ case "$ACTION" in
         ;;
     ssl)
         run_ssl "$HOST_NAME"
+        exit $?
+        ;;
+    nossl)
+        ssl_off
         exit $?
         ;;
     apikey)
