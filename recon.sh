@@ -237,6 +237,7 @@ run_passive() {
     PASSIVE_REPORT=$(passive_report_path "$domain")
     if [[ -n "$PASSIVE_REPORT" ]]; then
         ok "Laporan pasif: ${PASSIVE_REPORT}"
+        telegram_send_document "Recon pasif ${domain}" "$PASSIVE_REPORT" || true
     fi
     return 0
 }
@@ -881,10 +882,61 @@ conf_set() {
     return 0
 }
 
-# Sends one test message. The token travels through curl's stdin config, never
-# through argv, so it does not show up in the process list.
+# Quote values embedded in curl's stdin config; credentials never appear in argv.
+telegram_curl_escape() {
+    local value="$1"
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    value=${value//$'\r'/}
+    value=${value//$'\n'/\\n}
+    printf '%s' "$value"
+}
+
+telegram_send_document() {
+    local title="$1" file="$2" token chat file_arg caption response reason
+    token=$(conf_value TELEGRAM_TOKEN || true)
+    chat=$(conf_value TELEGRAM_CHAT || true)
+    if [[ -z "$token" || -z "$chat" ]]; then
+        warn "Laporan Telegram tidak dikirim: token/chat belum diatur. Jalankan bash recon.sh --telegram."
+        return 1
+    fi
+    if [[ ! -s "$file" ]]; then
+        warn "File laporan Telegram kosong atau tidak ditemukan: $file"
+        return 1
+    fi
+    if ! command -v curl >/dev/null 2>&1; then
+        warn "Laporan Telegram tidak dikirim: curl tidak terpasang."
+        return 1
+    fi
+
+    token=$(telegram_curl_escape "$token")
+    chat=$(telegram_curl_escape "$chat")
+    file_arg=$(telegram_curl_escape "$file")
+    caption=$(telegram_curl_escape "$title")
+    if ! response=$(curl --silent --show-error --max-time 60 --config - <<EOF
+url = "https://api.telegram.org/bot${token}/sendDocument"
+request = "POST"
+form = "chat_id=${chat}"
+form = "document=@${file_arg};type=text/markdown"
+form = "caption=${caption}"
+EOF
+); then
+        warn "Unggah laporan ke Telegram gagal sebelum menerima respons API."
+        return 1
+    fi
+    if grep -Eq '"ok"[[:space:]]*:[[:space:]]*true([,}]|$)' <<< "$response"; then
+        ok "Laporan lengkap terkirim ke Telegram."
+        return 0
+    fi
+    reason=$(printf '%s' "$response" | sed -n 's/.*"description":"\([^"]*\)".*/\1/p')
+    warn "Telegram menolak laporan${reason:+: ${reason}}."
+    return 1
+}
+
+# Sends one test message and checks Telegram's JSON response, not merely curl's
+# transport exit status (HTTP 400 can otherwise look like success).
 telegram_test() {
-    local token="${1:-}" chat="${2:-}" message
+    local token="${1:-}" chat="${2:-}" message response reason
 
     token="${token:-$(conf_value TELEGRAM_TOKEN || true)}"
     chat="${chat:-$(conf_value TELEGRAM_CHAT || true)}"
@@ -899,17 +951,25 @@ telegram_test() {
     fi
 
     message="recon: notifikasi Telegram aktif ($(date '+%Y-%m-%d %H:%M'))"
-    if curl --silent --show-error --max-time 20 --config - >/dev/null 2>&1 <<EOF
+    token=$(telegram_curl_escape "$token")
+    chat=$(telegram_curl_escape "$chat")
+    message=$(telegram_curl_escape "$message")
+    if ! response=$(curl --silent --show-error --max-time 20 --config - <<EOF
 url = "https://api.telegram.org/bot${token}/sendMessage"
 request = "POST"
 data-urlencode = "chat_id=${chat}"
 data-urlencode = "text=${message}"
 EOF
-    then
+); then
+        fail "Koneksi ke Telegram gagal. Periksa jaringan VPS dan coba lagi."
+        return 1
+    fi
+    if grep -Eq '"ok"[[:space:]]*:[[:space:]]*true([,}]|$)' <<< "$response"; then
         ok "Pesan uji terkirim ke chat ${chat}."
         return 0
     fi
-    fail "Telegram menolak pesan itu. Periksa token (BotFather) dan chat ID (@userinfobot)."
+    reason=$(printf '%s' "$response" | sed -n 's/.*"description":"\([^"]*\)".*/\1/p')
+    fail "Telegram menolak konfigurasi${reason:+: ${reason}}. Periksa token BotFather, kirim /start ke bot, lalu cek chat ID."
     return 1
 }
 

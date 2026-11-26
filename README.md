@@ -216,10 +216,14 @@ Every run writes two reports inside its workspace:
 Each finding in `final/report.md` answers four questions: **what it is**, **why it
 matters**, **what the impact is**, and **how to verify it by hand** — followed by
 the recommended fix. The same explanation is printed in the console when a run
-finishes (first ten findings), and the Telegram summary points to the file.
+finishes (first ten findings). With Telegram configured, a full run sends a short
+summary plus the complete findings/observations report and explained Markdown report
+as documents; the passive report is sent separately. Use `bash recon.sh --notify-test`
+to verify delivery.
 
 `reports/<domain>/latest-report.md` is a copy you can open without hunting for
-the run folder.
+the run folder. In the dashboard, use **Laporan** for generated reports; **Log Aktivitas**
+shows stage status and diagnostic output, not the report itself.
 
 
 ## Where everything is saved

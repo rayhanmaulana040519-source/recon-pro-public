@@ -1281,23 +1281,71 @@ curl_escape() {
 }
 
 notify() {
-    local message="$1" token chat
-    [[ -n "$TELEGRAM_TOKEN" && -n "$TELEGRAM_CHAT" ]] || return 0
-    check_tool curl || return 0
+    local message="$1" token chat response reason
+    if [[ -z "$TELEGRAM_TOKEN" || -z "$TELEGRAM_CHAT" ]]; then
+        log WARN "Telegram message skipped: token/chat is not configured. Run bash recon.sh --telegram."
+        return 1
+    fi
+    check_tool curl || return 1
     token=$(curl_escape "$TELEGRAM_TOKEN")
     chat=$(curl_escape "$TELEGRAM_CHAT")
     message=$(curl_escape "$message")
 
     # Credentials and message travel through curl's stdin config, never argv.
-    if ! curl --silent --show-error --max-time 20 --config - >/dev/null 2>&1 <<EOF
+    if ! response=$(curl --silent --show-error --max-time 20 --config - <<EOF
 url = "https://api.telegram.org/bot${token}/sendMessage"
 request = "POST"
 data-urlencode = "chat_id=${chat}"
 data-urlencode = "text=${message}"
 EOF
-    then
-        log WARN "Telegram notification could not be sent."
+); then
+        log WARN "Telegram request failed before the API returned a response."
+        return 1
     fi
+    if grep -Eq '"ok"[[:space:]]*:[[:space:]]*true([,}]|$)' <<< "$response"; then
+        log INFO "Telegram message sent."
+        return 0
+    fi
+    reason=$(printf '%s' "$response" | sed -n 's/.*"description":"\([^"]*\)".*/\1/p')
+    log WARN "Telegram rejected the message${reason:+: ${reason}}."
+    return 1
+}
+
+notify_document() {
+    local title="$1" file="$2" token chat file_arg caption response reason
+    if [[ -z "$TELEGRAM_TOKEN" || -z "$TELEGRAM_CHAT" ]]; then
+        log WARN "Telegram report skipped: token/chat is not configured. Run bash recon.sh --telegram."
+        return 1
+    fi
+    if [[ ! -s "$file" ]]; then
+        log WARN "Telegram report file is missing or empty: $file"
+        return 1
+    fi
+    check_tool curl || return 1
+    token=$(curl_escape "$TELEGRAM_TOKEN")
+    chat=$(curl_escape "$TELEGRAM_CHAT")
+    file_arg=$(curl_escape "$file")
+    caption=$(curl_escape "$title")
+
+    # Upload the full Markdown report as a document; secrets stay out of argv.
+    if ! response=$(curl --silent --show-error --max-time 60 --config - <<EOF
+url = "https://api.telegram.org/bot${token}/sendDocument"
+request = "POST"
+form = "chat_id=${chat}"
+form = "document=@${file_arg};type=text/markdown"
+form = "caption=${caption}"
+EOF
+); then
+        log WARN "Telegram report upload failed before the API returned a response."
+        return 1
+    fi
+    if grep -Eq '"ok"[[:space:]]*:[[:space:]]*true([,}]|$)' <<< "$response"; then
+        log INFO "Full report sent to Telegram: $file"
+        return 0
+    fi
+    reason=$(printf '%s' "$response" | sed -n 's/.*"description":"\([^"]*\)".*/\1/p')
+    log WARN "Telegram rejected the report upload${reason:+: ${reason}}."
+    return 1
 }
 
 # Telegram rejects anything over 4096 characters, so a long body is cut on line
@@ -3600,8 +3648,25 @@ notify_summary() {
     [[ -n "$OUTPUT_DIR" ]] || return 0
     local file="$OUTPUT_DIR/final/telegram_report.txt"
     [[ -s "$file" ]] || file="$OUTPUT_DIR/final/summary.txt"
-    [[ -s "$file" ]] || return 0
+    if [[ ! -s "$file" ]]; then
+        log WARN "Telegram summary was not sent: no report file was generated."
+        return 0
+    fi
+    if [[ -z "$TELEGRAM_TOKEN" || -z "$TELEGRAM_CHAT" ]]; then
+        log WARN "Telegram report was not sent: configure it with bash recon.sh --telegram."
+        return 0
+    fi
     notify_long "Recon ${DOMAIN}" "$file"
+    if [[ -s "$OUTPUT_DIR/final/bugs_found.txt" ]]; then
+        notify_document "Recon ${DOMAIN} — full findings and observations" "$OUTPUT_DIR/final/bugs_found.txt"
+    else
+        log WARN "Full findings report is missing; only the Telegram summary was sent."
+    fi
+    if [[ -s "$OUTPUT_DIR/final/report.md" ]]; then
+        notify_document "Recon ${DOMAIN} — explained Markdown report" "$OUTPUT_DIR/final/report.md"
+    else
+        log WARN "Explained Markdown report is missing; only the Telegram summary was sent."
+    fi
 }
 
 show_report() {

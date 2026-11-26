@@ -4,7 +4,7 @@ This companion bot lets an approved user request a full Recon Pro pipeline from 
 
 ## What it does
 
-- `/scan example.com` requests a scan, then shows inline Mulai scan/Batal buttons before it starts. The scan runs the active pipeline **and** the passive toolkit, so both reports are produced.
+- `/scan example.com` requests a scan, then shows inline Mulai scan/Batal buttons before it starts. The scan runs the active pipeline **and** the passive toolkit, so both reports are produced; when Telegram is configured, it sends the full active findings and explained Markdown reports, plus the passive report, as documents after the run.
 - `/passive example.com` runs only the passive OSINT + header toolkit and sends its findings.
 - `/status` reports the current or most recent scan, plus the proxy pool size and rotation state.
 - `/report [example.com]` sends the latest Telegram report for a configured target.
