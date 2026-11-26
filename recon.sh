@@ -37,6 +37,7 @@ RUNS_DIR="${RECON_HOME%/}/runs"
 REPORTS_DIR="${RECON_HOME%/}/reports"
 STATE_DIR="${RECON_HOME%/}/state"
 CONFIG_FILE="${STATE_DIR}/recon_pro.conf"
+LOG_FILE="${STATE_DIR%/}/recon.log"
 
 TOOLKIT_DIR="${SCRIPT_DIR}/bugbounty-toolkit"
 TOOLKIT_SCOPE="${TOOLKIT_DIR}/data/extra_scope.txt"
@@ -485,8 +486,8 @@ show_clean() {
 # direct access by IP; a real domain should get a real certificate (Cloudflare
 # Tunnel or certbot), otherwise every browser will warn.
 run_ssl() {
-    local host="${1:-}" dir="${RECON_HOME%/}/state/tls" port ip san
-    mkdir -p "$dir" 2>/dev/null || true
+    local host="${1:-}" dir="${RECON_HOME%/}/state/tls" port ip4 ip6 san
+    mkdir -p "$dir" "$STATE_DIR" 2>/dev/null || true
     if ! command -v openssl >/dev/null 2>&1; then
         fail "openssl tidak terpasang."
         return 1
@@ -494,11 +495,25 @@ run_ssl() {
     [[ -n "$host" ]] || host="localhost"
     port="${RECON_WEB_PORT:-8765}"
 
-    ip=$(curl -fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)
-    san="DNS:${host}"
-    [[ -n "$ip" ]] && san="${san},IP:${ip}"
+    # Both stacks: a VPS may answer with IPv6 first, and a certificate should
+    # cover whichever address the browser is actually pointed at.
+    ip4=$(curl -4 -fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)
+    ip6=$(curl -6 -fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)
+    [[ "$ip4" =~ ^[0-9a-fA-F.:]+$ ]] || ip4=""
+    [[ "$ip6" =~ ^[0-9a-fA-F:]+$ ]] || ip6=""
 
-    info "Membuat sertifikat TLS self-signed untuk ${host}${ip:+, $ip} ..."
+    san="DNS:${host}"
+    local extra
+    for extra in "DNS:localhost" "IP:127.0.0.1" "IP:::1" \
+                 "${ip4:+IP:${ip4}}" "${ip6:+IP:${ip6}}"; do
+        [[ -n "$extra" ]] || continue
+        case ",${san}," in
+            *",${extra},"*) continue ;;
+        esac
+        san="${san},${extra}"
+    done
+
+    info "Membuat sertifikat TLS self-signed untuk ${host} (SAN: ${san}) ..."
     if openssl req -x509 -newkey rsa:2048 -nodes \
         -keyout "${dir}/key.pem" \
         -out "${dir}/cert.pem" \
@@ -510,7 +525,7 @@ run_ssl() {
         -days 825 -subj "/CN=${host}" >>"$LOG_FILE" 2>&1; then
         chmod 600 "${dir}/key.pem" 2>/dev/null || true
         ok "Sertifikat siap: ${dir}/cert.pem"
-        printf '  Buka   : https://<ip-vps>:%s\n' "$port"
+        printf '  Buka   : https://%s:%s\n' "${ip4:-localhost}" "$port"
         printf '  Catatan: self-signed, browser akan memperingatkan sekali.\n'
         printf '  Tanpa peringatan: pakai domain + Cloudflare Tunnel (lihat vps_mcp/README.md),\n'
         printf '  atau certbot: sudo apt-get install -y certbot && sudo certbot certonly --standalone -d <domain>\n'
