@@ -586,6 +586,12 @@ web_pids() {
 
 web_stop() {
     local s=1 pids
+    if web_service_active; then
+        info "Dashboard dikelola systemd; menghentikan lewat systemctl ..."
+        systemctl stop recon-pro-web.service 2>/dev/null || true
+        ok "Service dihentikan."
+        return 0
+    fi
     pids=$(web_pids)
     if [[ -z "$pids" ]]; then
         info "Dashboard tidak sedang jalan."
@@ -607,18 +613,30 @@ web_stop() {
     return 0
 }
 
+# start.sh only enables TLS when both files exist, so this must use the same rule.
 web_scheme() {
-    if [[ -f "${RECON_HOME%/}/state/tls/cert.pem" ]]; then
+    if [[ -f "${RECON_HOME%/}/state/tls/cert.pem" && -f "${RECON_HOME%/}/state/tls/key.pem" ]]; then
         printf 'https'
     else
         printf 'http'
     fi
 }
 
+# Tries the expected scheme first, then the other one, so a mismatch between
+# what the cert suggests and what the server actually serves is not reported as
+# "not answering". Sets WEB_READY_SCHEME to whichever answered.
 web_ready() {
-    local scheme port="${RECON_WEB_PORT:-8765}"
-    scheme=$(web_scheme)
-    curl -k -s -o /dev/null --max-time 3 "${scheme}://127.0.0.1:${port}/" 2>/dev/null
+    local port="${RECON_WEB_PORT:-8765}" first other s
+    first=$(web_scheme)
+    if [[ "$first" == "https" ]]; then other="http"; else other="https"; fi
+    for s in "$first" "$other"; do
+        if curl -k -s -o /dev/null --max-time 3 "${s}://127.0.0.1:${port}/" 2>/dev/null; then
+            WEB_READY_SCHEME="$s"
+            return 0
+        fi
+    done
+    WEB_READY_SCHEME=""
+    return 1
 }
 
 web_wait_ready() {
@@ -631,12 +649,16 @@ web_wait_ready() {
 }
 
 web_report_ready() {
-    local scheme port="${RECON_WEB_PORT:-8765}"
-    scheme=$(web_scheme)
+    local scheme port="${RECON_WEB_PORT:-8765}" token
+    scheme="${WEB_READY_SCHEME:-$(web_scheme)}"
     ok "Dashboard siap: ${scheme}://127.0.0.1:${port}"
-    if [[ -s "${STATE_DIR}/web_token" ]]; then
-        printf '  Token : %s\n' "$(cat "${STATE_DIR}/web_token")"
+    token=""
+    [[ -s "${STATE_DIR}/web_token" ]] && token=$(cat "${STATE_DIR}/web_token")
+    if [[ -z "$token" ]] && command -v journalctl >/dev/null 2>&1; then
+        token=$(journalctl -u recon-pro-web --no-pager -n 200 2>/dev/null \
+            | grep -o 'Token : .*' | tail -n 1 | cut -d' ' -f3-)
     fi
+    [[ -n "$token" ]] && printf '  Token : %s\n' "$token"
     printf '  Hentikan: bash recon.sh --web-stop\n'
 }
 
@@ -767,6 +789,11 @@ ExecStart=${BASH_BIN} ${SCRIPT_DIR}/web_ui/start.sh
 Restart=on-failure
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+# Pin the state directory: systemd does not always hand the same HOME to the
+# service as the shell that installed it, and a different RECON_PRO_HOME means
+# a different token file, log and certificate.
+Environment=RECON_PRO_HOME=${RECON_HOME}
+Environment=HOME=${HOME:-/root}
 ${shell_env}
 
 [Install]
@@ -774,8 +801,11 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload || true
     systemctl enable recon-pro-web.service >/dev/null 2>&1 || true
-    # A dashboard started by hand holds the port; free it before systemd takes over.
-    web_stop
+    # Stop whatever holds the port (systemd or a manual start) before taking over.
+    systemctl stop recon-pro-web.service 2>/dev/null || true
+    if ! web_service_active; then
+        web_stop
+    fi
     systemctl restart recon-pro-web.service || true
     sleep 2
     if systemctl is-active --quiet recon-pro-web.service; then
@@ -793,15 +823,24 @@ EOF
 # browser lost its session: the HTTPS address is a different origin from the old
 # HTTP one, so the saved token does not carry over.
 show_web_token() {
-    local scheme="http" port="${RECON_WEB_PORT:-8765}" token_file="${STATE_DIR}/web_token"
-    [[ -f "${RECON_HOME%/}/state/tls/cert.pem" ]] && scheme="https"
-    if [[ ! -s "$token_file" ]]; then
+    local scheme port="${RECON_WEB_PORT:-8765}" token_file="${STATE_DIR}/web_token" token=""
+    scheme=$(web_scheme)
+    [[ -s "$token_file" ]] && token=$(cat "$token_file")
+    # A service started by an older unit may have used a different state
+    # directory; the token it printed is still in its journal.
+    if [[ -z "$token" ]] && command -v journalctl >/dev/null 2>&1; then
+        token=$(journalctl -u recon-pro-web --no-pager -n 200 2>/dev/null \
+            | grep -o 'Token : .*' | tail -n 1 | cut -d' ' -f3-)
+    fi
+    if [[ -z "$token" ]]; then
         fail "Token belum dibuat. Jalankan dulu: bash recon.sh --web-restart"
         return 1
     fi
     printf 'URL   : %s://127.0.0.1:%s\n' "$scheme" "$port"
-    printf 'Token : %s\n' "$(cat "$token_file")"
-    if [[ -z "$(web_pids)" ]]; then
+    printf 'Token : %s\n' "$token"
+    if web_service_active; then
+        printf 'Status: jalan sebagai service recon-pro-web\n'
+    elif [[ -z "$(web_pids)" ]]; then
         printf 'Status: dashboard tidak jalan — bash recon.sh --web-restart\n'
     else
         printf 'Status: jalan (PID %s)\n' "$(web_pids | tr '\n' ' ' | sed 's/ $//')"
