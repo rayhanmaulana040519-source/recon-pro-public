@@ -124,7 +124,9 @@ class TechDetector:
         # certificates that happen to sit in the CT logs. Like DNS, the handshake
         # leaves from this machine and cannot use the HTTP proxy.
         if hostname and bool(collectors.get("tls_probe", True)):
-            tls = _tls_probe(hostname, timeout)
+            # Bounded well below the HTTP timeout: a host with no listener on 443
+            # must not add fifteen seconds to every pass.
+            tls = _tls_probe(hostname, min(timeout, 8.0))
             if tls:
                 result["tls"] = tls
 
