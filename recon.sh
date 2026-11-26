@@ -81,6 +81,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --web                 jalankan dashboard lokal (token dibuat otomatis)
   bash recon.sh --web-restart         stop + jalankan dashboard di background
   bash recon.sh --web-stop            hentikan dashboard yang jalan
+  bash recon.sh --web-token           tampilkan URL + token dashboard
   bash recon.sh --telegram            atur token, chat ID & user bot, lalu tes
   bash recon.sh --notify-test         kirim ulang pesan tes ke Telegram
   bash recon.sh --stop-bot            hentikan bot yang sedang jalan
@@ -626,6 +627,29 @@ web_start() {
 web_restart() {
     web_stop
     web_start
+}
+
+# Prints the URL and the access token without touching the server. Useful when a
+# browser lost its session: the HTTPS address is a different origin from the old
+# HTTP one, so the saved token does not carry over.
+show_web_token() {
+    local scheme="http" port="${RECON_WEB_PORT:-8765}" token_file="${STATE_DIR}/web_token"
+    [[ -f "${RECON_HOME%/}/state/tls/cert.pem" ]] && scheme="https"
+    if [[ ! -s "$token_file" ]]; then
+        fail "Token belum dibuat. Jalankan dulu: bash recon.sh --web-restart"
+        return 1
+    fi
+    printf 'URL   : %s://127.0.0.1:%s\n' "$scheme" "$port"
+    printf 'Token : %s\n' "$(cat "$token_file")"
+    if [[ -z "$(web_pids)" ]]; then
+        printf 'Status: dashboard tidak jalan — bash recon.sh --web-restart\n'
+    else
+        printf 'Status: jalan (PID %s)\n' "$(web_pids | tr '\n' ' ' | sed 's/ $//')"
+    fi
+    printf 'Catatan: token ini setara password dashboard; jangan dibagikan.\n'
+    printf 'Kalau browser masih meminta login setelah ganti http -> https, itu wajar:\n'
+    printf 'localStorage terpisah per origin, jadi masuk sekali lagi dengan token di atas.\n'
+    return 0
 }
 
 show_tools() {
@@ -1390,6 +1414,7 @@ while (( $# )); do
         --web|--dashboard) ACTION="web" ;;
         --web-restart) ACTION="webrestart" ;;
         --web-stop)   ACTION="webstop" ;;
+        --web-token)  ACTION="webtoken" ;;
         --telegram)   ACTION="telegram" ;;
         --notify-test) ACTION="notify" ;;
         --stop-bot)   ACTION="stopbot" ;;
@@ -1485,6 +1510,10 @@ case "$ACTION" in
         ;;
     webrestart)
         web_restart
+        exit $?
+        ;;
+    webtoken)
+        show_web_token
         exit $?
         ;;
     report)
