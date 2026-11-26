@@ -46,6 +46,8 @@ bash recon.sh --self-test             # cek sintaks semua skrip
 bash recon.sh --install-service       # bot sebagai service systemd (bertahan reboot)
 bash recon.sh --setup                 # pasang/rapikan semua kebutuhan
 bash recon.sh --fix-tools             # lengkapi tool yang belum ada (arsenal + Python)
+bash recon.sh --clean                 # daftar file sampah (arsip unduhan, output lama)
+bash recon.sh --clean --apply         # hapus daftar itu, dengan konfirmasi
 bash recon.sh --no-setup example.com  # jangan pasang apa pun, langsung scan
 bash recon.sh                         # menu interaktif (scan bertahap, settings, proxy)
 ```

@@ -79,6 +79,8 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --install-service     pasang bot sebagai service systemd (root)
   bash recon.sh --setup [opsi]        pasang semua kebutuhan (opsi diteruskan ke setup.sh)
   bash recon.sh --fix-tools           pasang tool yang belum ada (arsenal + Python)
+  bash recon.sh --clean [folder]      lihat file sampah (arsip unduhan, output lama)
+  bash recon.sh --clean --apply       hapus file sampah yang terdaftar tadi
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
 
@@ -363,6 +365,69 @@ tool_version() {
         fi
     done
     printf 'terpasang'
+}
+
+# ------------------------------------------------------------------ cleanup ---
+# Lists the files that are clearly leftovers — downloaded tool archives, old
+# nmap output, interrupted-tool state — one directory deep, never recursing and
+# never touching a directory. Nothing is deleted without --apply, and even then
+# it asks for the word "hapus" first.
+show_clean() {
+    local dir="${1:-${HOME:-/root}}" apply="${2:-0}" f size count=0 confirm
+    if [[ ! -d "$dir" ]]; then
+        fail "Folder tidak ada: ${dir}"
+        return 1
+    fi
+
+    info "Memeriksa ${dir} (hanya file, satu level, folder tidak disentuh) ..."
+    printf '\n%-10s %s\n' "UKURAN" "FILE"
+    printf '%-10s %s\n' "------" "----"
+
+    local -a files=()
+    while IFS= read -r -d '' f; do
+        files+=("$f")
+    done < <(find "$dir" -maxdepth 1 -type f \
+        \( -name '*.zip*' -o -name '*.tar.gz*' -o -name '*.tgz*' \
+           -o -name '*.deb' -o -name 'nmap-*' -o -name '*.restore' \) \
+        -print0 2>/dev/null)
+
+    if (( ${#files[@]} == 0 )); then
+        ok "Tidak ada file sampah yang dikenali di ${dir}."
+        return 0
+    fi
+
+    for f in "${files[@]}"; do
+        size=$(du -h "$f" 2>/dev/null | cut -f1)
+        printf '%-10s %s\n' "${size:-?}" "$(basename "$f")"
+        count=$((count + 1))
+    done
+
+    printf '\nTotal: %d file\n' "$count"
+    printf 'Pola yang dianggap sampah: *.zip*, *.tar.gz*, *.tgz*, *.deb, nmap-*, *.restore\n'
+    printf 'Folder, laporan, konfigurasi, dan hasil scan tidak pernah ikut dihapus.\n'
+
+    if (( ! apply )); then
+        printf '\nBelum ada yang dihapus. Untuk menghapus daftar di atas:\n'
+        printf '  bash recon.sh --clean %s --apply\n' "$dir"
+        return 0
+    fi
+
+    printf '\nHapus %d file di atas? Ketik hapus untuk melanjutkan: ' "$count"
+    confirm=""
+    read -r confirm || confirm=""
+    if [[ "$confirm" != "hapus" ]]; then
+        printf 'Dibatalkan.\n'
+        return 0
+    fi
+    for f in "${files[@]}"; do
+        if rm -f "$f"; then
+            printf '  hapus %s\n' "$(basename "$f")"
+        else
+            warn "gagal menghapus $(basename "$f")"
+        fi
+    done
+    ok "Selesai."
+    return 0
 }
 
 show_tools() {
@@ -931,6 +996,8 @@ ACTION=""
 ASSUME=0
 NO_SETUP=0
 NO_PASSIVE=0
+CLEAN_APPLY=0
+CLEAN_DIR="${HOME:-/root}"
 PROFILE=""
 
 while (( $# )); do
@@ -939,6 +1006,15 @@ while (( $# )); do
         -y|--yes)     ASSUME=1 ;;
         --setup)      ACTION="setup" ;;
         --fix-tools|--install-missing) ACTION="fixtools" ;;
+        --clean)
+            ACTION="clean"
+            CLEAN_DIR="${HOME:-/root}"
+            if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
+                CLEAN_DIR="$2"
+                shift
+            fi
+            ;;
+        --apply)      CLEAN_APPLY=1 ;;
         --passive)    ACTION="passive" ;;
         --no-passive) NO_PASSIVE=1 ;;
         --fast)       PROFILE="fast" ;;
@@ -1011,6 +1087,10 @@ case "$ACTION" in
     tools)
         show_tools
         exit 0
+        ;;
+    clean)
+        show_clean "$CLEAN_DIR" "$CLEAN_APPLY"
+        exit $?
         ;;
     web)
         exec "$BASH_BIN" "$SCRIPT_DIR/web_ui/start.sh"
