@@ -82,6 +82,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --web-restart         stop + jalankan dashboard di background
   bash recon.sh --web-stop            hentikan dashboard yang jalan
   bash recon.sh --web-token           tampilkan URL + token dashboard
+  bash recon.sh --web-install-service dashboard jadi service systemd (hidup setelah reboot)
   bash recon.sh --telegram            atur token, chat ID & user bot, lalu tes
   bash recon.sh --notify-test         kirim ulang pesan tes ke Telegram
   bash recon.sh --stop-bot            hentikan bot yang sedang jalan
@@ -605,29 +606,128 @@ web_stop() {
     return 0
 }
 
-web_start() {
-    local scheme="http" port="${RECON_WEB_PORT:-8765}" i
-    [[ -f "${RECON_HOME%/}/state/tls/cert.pem" ]] && scheme="https"
-    mkdir -p "$STATE_DIR" 2>/dev/null || true
-    info "Menjalankan dashboard di background (log: ${STATE_DIR}/web.log) ..."
-    nohup bash "${SCRIPT_DIR}/web_ui/start.sh" >>"${STATE_DIR}/web.log" 2>&1 &
-    disown 2>/dev/null || true
+web_scheme() {
+    if [[ -f "${RECON_HOME%/}/state/tls/cert.pem" ]]; then
+        printf 'https'
+    else
+        printf 'http'
+    fi
+}
+
+web_ready() {
+    local scheme port="${RECON_WEB_PORT:-8765}"
+    scheme=$(web_scheme)
+    curl -k -s -o /dev/null --max-time 3 "${scheme}://127.0.0.1:${port}/" 2>/dev/null
+}
+
+web_wait_ready() {
+    local i
     for i in $(seq 1 40); do
-        if curl -k -s -o /dev/null --max-time 3 "${scheme}://127.0.0.1:${port}/" 2>/dev/null; then
-            ok "Dashboard siap: ${scheme}://127.0.0.1:${port}"
-            [[ -s "${STATE_DIR}/web_token" ]] && printf '  Token : %s\n' "$(cat "${STATE_DIR}/web_token")"
-            printf '  Hentikan: bash recon.sh --web-stop\n'
-            return 0
-        fi
+        web_ready && return 0
         sleep 0.5
     done
-    warn "Dashboard belum menjawab; lihat ${STATE_DIR}/web.log"
+    return 1
+}
+
+web_report_ready() {
+    local scheme port="${RECON_WEB_PORT:-8765}"
+    scheme=$(web_scheme)
+    ok "Dashboard siap: ${scheme}://127.0.0.1:${port}"
+    if [[ -s "${STATE_DIR}/web_token" ]]; then
+        printf '  Token : %s\n' "$(cat "${STATE_DIR}/web_token")"
+    fi
+    printf '  Hentikan: bash recon.sh --web-stop\n'
+}
+
+web_service_active() {
+    command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet recon-pro-web.service 2>/dev/null
+}
+
+web_start() {
+    local port="${RECON_WEB_PORT:-8765}" log_file="${STATE_DIR}/web.log"
+    # A systemd-managed dashboard must start through systemd; a second manual
+    # process would only fight it for the port.
+    if web_service_active; then
+        info "Dashboard dikelola systemd; restart lewat systemctl ..."
+        systemctl restart recon-pro-web.service 2>/dev/null || true
+        if web_wait_ready; then
+            web_report_ready
+            return 0
+        fi
+        warn "Service tidak menjawab; lihat: sudo journalctl -u recon-pro-web -n 30 --no-pager"
+        return 1
+    fi
+    mkdir -p "$STATE_DIR" 2>/dev/null || true
+    : >"$log_file" 2>/dev/null || true
+    info "Menjalankan dashboard di background (log: ${log_file}) ..."
+    nohup bash "${SCRIPT_DIR}/web_ui/start.sh" >>"$log_file" 2>&1 &
+    disown 2>/dev/null || true
+    if web_wait_ready; then
+        web_report_ready
+        return 0
+    fi
+    warn "Dashboard belum menjawab. Isi ${log_file}:"
+    tail -n 12 "$log_file" 2>/dev/null | while IFS= read -r line; do printf '    %s\n' "$line"; done
+    if grep -qi 'Address already in use' "$log_file" 2>/dev/null; then
+        printf '    Port %s dipakai proses lain. Hentikan dulu: bash recon.sh --web-stop\n' "$port"
+    elif grep -qi 'ERROR' "$log_file" 2>/dev/null; then
+        printf '    Lihat pesan ERROR di atas; perbaiki lalu ulangi: bash recon.sh --web-restart\n'
+    fi
     return 1
 }
 
 web_restart() {
+    if web_service_active; then
+        web_start
+        return $?
+    fi
     web_stop
     web_start
+}
+
+# Installs the dashboard as a systemd service so it survives logout, crashes
+# and reboots — the usual reason "the site is unreachable" after a VPS restart.
+web_install_service() {
+    local unit="/etc/systemd/system/recon-pro-web.service"
+    if (( EUID != 0 )); then
+        fail "Perlu root: sudo bash recon.sh --web-install-service"
+        return 1
+    fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        fail "systemd tidak tersedia di mesin ini."
+        return 1
+    fi
+    cat >"$unit" <<EOF
+[Unit]
+Description=Recon Pro dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${SCRIPT_DIR}
+ExecStart=${BASH_BIN} ${SCRIPT_DIR}/web_ui/start.sh
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload || true
+    systemctl enable recon-pro-web.service >/dev/null 2>&1 || true
+    # A dashboard started by hand holds the port; free it before systemd takes over.
+    web_stop
+    systemctl restart recon-pro-web.service || true
+    sleep 2
+    if systemctl is-active --quiet recon-pro-web.service; then
+        ok "Dashboard jalan sebagai service (recon-pro-web), otomatis hidup setelah reboot."
+        printf '  Lihat log: sudo journalctl -u recon-pro-web -n 30 --no-pager\n'
+        show_web_token
+    else
+        warn "Service gagal start; lihat: sudo journalctl -u recon-pro-web -n 30 --no-pager"
+        return 1
+    fi
+    return 0
 }
 
 # Prints the URL and the access token without touching the server. Useful when a
@@ -1431,6 +1531,7 @@ while (( $# )); do
         --web-restart) ACTION="webrestart" ;;
         --web-stop)   ACTION="webstop" ;;
         --web-token)  ACTION="webtoken" ;;
+        --web-install-service) ACTION="webservice" ;;
         --telegram)   ACTION="telegram" ;;
         --notify-test) ACTION="notify" ;;
         --stop-bot)   ACTION="stopbot" ;;
@@ -1534,6 +1635,10 @@ case "$ACTION" in
         ;;
     webtoken)
         show_web_token
+        exit $?
+        ;;
+    webservice)
+        web_install_service
         exit $?
         ;;
     report)
