@@ -660,7 +660,7 @@ class ReconTelegramBot:
         return path if path.is_file() else None
 
     def stage_summary(self, domain):
-        """One line per stage: name, result, detail."""
+        """One line per stage: name, result, duration, detail."""
         path = self.output_base() / domain / "latest" / "logs" / "stages.tsv"
         if not path.is_file():
             return ""
@@ -671,7 +671,11 @@ class ReconTelegramBot:
         for line in text.splitlines():
             if not line.strip():
                 continue
-            rows.append(" | ".join(part.strip() for part in line.split("\t")))
+            fields = [part.strip() for part in line.split("\t")]
+            fields += [""] * (3 - len(fields))
+            duration = fields[3] if len(fields) > 3 else ""
+            spent = duration + "s" if duration.isdigit() else "-"
+            rows.append(" | ".join((fields[0], fields[1], spent, fields[2])))
         return "\n".join(rows)
 
     def proxy_status(self):

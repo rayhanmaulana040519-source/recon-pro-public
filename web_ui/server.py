@@ -731,9 +731,19 @@ def _run_stages(run: Path | None) -> list[dict[str, str]]:
     except OSError:
         return stages
     for line in lines:
-        fields = line.split("\t", 2)
-        if len(fields) == 3:
-            stages.append({"name": fields[0], "status": fields[1], "note": _redact(fields[2])})
+        fields = line.split("\t")
+        if len(fields) < 3:
+            continue
+        duration = 0
+        if len(fields) >= 4 and fields[3].strip().isdigit():
+            duration = int(fields[3].strip())
+        stages.append({
+            "name": fields[0],
+            "status": fields[1],
+            "note": _redact(fields[2]),
+            "duration": duration,
+            "finished": fields[4].strip() if len(fields) >= 5 else "",
+        })
     return stages
 
 

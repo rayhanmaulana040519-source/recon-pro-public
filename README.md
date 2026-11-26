@@ -105,6 +105,27 @@ Hasil:
 | aktif | `~/recon_pro/reports/<domain>/latest-report.md` |
 | pasif | `bugbounty-toolkit/reports/<domain>-<timestamp>.md` |
 
+### Profil run & pengukuran durasi
+
+Setiap stage sekarang mencatat berapa lama ia berjalan: kolom keempat
+`logs/stages.tsv` berisi durasi dalam detik, kolom kelima jam selesainya. Angka
+itu muncul di tab **Log** dashboard, di ringkasan console, dan di tabel metode
+pada laporan Markdown — jadi tuning tidak lagi menebak.
+
+```bash
+bash recon.sh --fast example.com     # cap kecil, timeout 10 menit, tanpa autocalibrate
+bash recon.sh example.com            # pakai angka dari state/recon_pro.conf
+bash recon.sh --deep example.com     # cap 2x, timeout 1 jam, autocalibrate
+bash recon.sh --max example.com      # cap maksimum, threads 80, rate 150/s
+bash recon.sh --timings example.com  # stage diurutkan dari yang paling lama
+```
+
+Profil hanya berlaku untuk run itu (`RECON_PRO_PROFILE`), file konfigurasi tidak
+diubah. `--max` menaikkan laju request — pastikan masih di dalam batas yang
+diizinkan program bounty; kalau tidak, hasilnya WAF block dan temuan palsu
+negatif. Run lama yang dibuat sebelum perubahan ini tetap terbaca, hanya kolom
+durasinya kosong.
+
 ### Kalau semua sudah terpasang
 
 ```bash

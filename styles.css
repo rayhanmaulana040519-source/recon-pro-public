@@ -331,3 +331,11 @@ select,input,textarea{font-family:var(--mono)}
 @media(prefers-reduced-motion:reduce){
   .crt-vignette,.console-running,.op-ticker-track p,.glitch-hit,.login-kicker i{animation:none!important}
 }
+
+
+/* stage duration column */
+.stage-duration{font-family:var(--mono);font-size:9px;letter-spacing:.06em;color:var(--muted);white-space:nowrap}
+.stage-slowest{background:#0d1a0a}
+.stage-slowest .stage-duration{color:var(--accent);font-weight:700;text-shadow:0 0 10px #5cff2e66}
+.stage-slowest .stage-name::before{content:"▲ ";color:var(--accent);font-size:8px}
+@media(max-width:560px){.stage-duration{font-size:8px}}

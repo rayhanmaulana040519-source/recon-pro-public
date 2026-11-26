@@ -57,6 +57,10 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh <domain> -y           tanpa konfirmasi (otomasi/cron)
   bash recon.sh --passive <domain>    hanya toolkit pasif (OSINT)
   bash recon.sh --no-passive <domain> scan penuh saja
+  bash recon.sh --fast <domain>       profil cepat: cap kecil, timeout pendek
+  bash recon.sh --deep <domain>       profil dalam: cap besar, autocalibrate
+  bash recon.sh --max <domain>        profil maksimal (patuhi rate program)
+  bash recon.sh --timings [domain]    durasi per stage, urut paling lama
   bash recon.sh --report [domain]     detail bug dari kedua laporan
   bash recon.sh --log [domain]        log scan, ringkasan stage, error
   bash recon.sh --failures [domain]   hanya tool/stage yang gagal atau skip
@@ -267,7 +271,7 @@ show_log() {
 
     printf '\n--- RINGKASAN STAGE ---\n'
     if [[ -s "$run_dir/logs/stages.tsv" ]]; then
-        awk -F'\t' '{ printf "%-12s %-10s %s\n", $1, $2, $3 }' "$run_dir/logs/stages.tsv"
+        awk -F'\t' '{ t = ($4 == "" ? "-" : $4 "s"); printf "%-12s %-10s %-7s %s\n", $1, $2, t, $3 }' "$run_dir/logs/stages.tsv"
     else
         printf '_belum ada stage yang tercatat_\n'
     fi
@@ -296,6 +300,36 @@ show_log() {
 
     printf '\nLog toolkit pasif: %s/logs/toolkit.log\n' "$TOOLKIT_DIR"
     printf 'Semua file log aktif: %s/logs/  (pipeline.log, stages.tsv, <stage>.err)\n' "$run_dir"
+    return 0
+}
+
+# show_timings [domain]
+# Ranks the stages of the newest run by duration, so a slow scan is tuned from
+# data instead of a guess.
+show_timings() {
+    local domain="${1:-}" run_dir total
+    domain="${domain:-$(latest_domain)}"
+
+    if [[ -z "$domain" ]]; then
+        fail "Belum ada run. Jalankan: bash recon.sh example.com"
+        return 1
+    fi
+    run_dir="${RUNS_DIR}/${domain}/latest"
+    if [[ ! -s "$run_dir/logs/stages.tsv" ]]; then
+        fail "Belum ada catatan stage untuk ${domain}. Run lama tidak menyimpan durasi; jalankan scan baru."
+        return 1
+    fi
+
+    printf '%b=== DURASI STAGE: %s ===%b\n' "${BOLD}${CYAN}" "$domain" "$NC"
+    printf 'Workspace : %s\n\n' "$run_dir"
+    printf '%-10s %-9s %-8s %s\n' "STAGE" "STATUS" "WAKTU" "CATATAN"
+    printf '%-10s %-9s %-8s %s\n' "-----" "------" "-----" "-------"
+    sort -t$'\t' -k4,4nr "$run_dir/logs/stages.tsv" |
+        awk -F'\t' '{ t = ($4 == "" ? "-" : $4 "s"); printf "%-10s %-9s %-8s %s\n", $1, $2, t, $3 }'
+    total=$(awk -F'\t' '{ if ($4 ~ /^[0-9]+$/) s += $4 } END { printf "%d", s }' "$run_dir/logs/stages.tsv")
+    printf '\nTotal waktu stage tercatat: %ss\n' "${total:-0}"
+    printf 'Perkecil cap stage teratas di %s, atau jalankan: bash recon.sh --fast %s\n' \
+        "$CONFIG_FILE" "$domain"
     return 0
 }
 
@@ -880,6 +914,7 @@ ACTION=""
 ASSUME=0
 NO_SETUP=0
 NO_PASSIVE=0
+PROFILE=""
 
 while (( $# )); do
     case "$1" in
@@ -888,6 +923,9 @@ while (( $# )); do
         --setup)      ACTION="setup" ;;
         --passive)    ACTION="passive" ;;
         --no-passive) NO_PASSIVE=1 ;;
+        --fast)       PROFILE="fast" ;;
+        --deep)       PROFILE="deep" ;;
+        --max)        PROFILE="max" ;;
         --tools|--check|-c) ACTION="tools" ;;
         --web|--dashboard) ACTION="web" ;;
         --telegram)   ACTION="telegram" ;;
@@ -903,6 +941,13 @@ while (( $# )); do
         --no-setup)   NO_SETUP=1 ;;
         --report)
             ACTION="report"
+            if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
+                DOMAIN="$2"
+                shift
+            fi
+            ;;
+        --timings)
+            ACTION="timings"
             if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
                 DOMAIN="$2"
                 shift
@@ -955,6 +1000,10 @@ case "$ACTION" in
         ;;
     log)
         show_log "$DOMAIN"
+        exit $?
+        ;;
+    timings)
+        show_timings "$DOMAIN"
         exit $?
         ;;
     failures)
@@ -1108,6 +1157,10 @@ fi
 
 # ---------------------------------------------------------------------- scan ---
 info "Mulai scan penuh: ${DOMAIN}"
+if [[ -n "$PROFILE" ]]; then
+    export RECON_PRO_PROFILE="$PROFILE"
+    info "Profil: ${PROFILE} (mengalahkan angka di ${CONFIG_FILE} untuk run ini)"
+fi
 "$BASH_BIN" "$SCRIPT_DIR/recon_pro.sh" --yes "$DOMAIN"
 rc=$?
 

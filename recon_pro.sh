@@ -150,6 +150,9 @@ TELEGRAM_CHAT="${TELEGRAM_CHAT_ID:-${TELEGRAM_CHAT_ID_DEFAULT}}"
 TELEGRAM_ALLOWED_USERS=""
 ASSUME_YES=0
 CHECK_ONLY=0
+# Stages run one after another. STAGE_MARK holds $SECONDS from the previous
+# stage_status call, so the next one can report how long it actually took.
+STAGE_MARK=0
 
 # ---------------------------------------------------------------- utilities --
 
@@ -481,9 +484,58 @@ describe_status() {
 }
 
 # Record one stage for the final report: name, state (ok/skipped/failed), note.
+# Field 4 is the elapsed time since the previous stage (seconds) and field 5 is
+# the local finish time, so a slow run can be tuned with numbers instead of
+# guesswork. Older rows keep their 3 fields and are read as "no duration".
 stage_status() {
     [[ -n "$OUTPUT_DIR" && -d "${OUTPUT_DIR}/logs" ]] || return 0
-    printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >> "${OUTPUT_DIR}/logs/stages.tsv" 2>/dev/null || true
+    local now duration finish
+    now=${SECONDS:-0}
+    duration=$(( now - STAGE_MARK ))
+    (( duration < 0 )) && duration=0
+    STAGE_MARK=$now
+    finish=$(date '+%H:%M:%S' 2>/dev/null || printf '')
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "${3:-}" "$duration" "$finish" \
+        >> "${OUTPUT_DIR}/logs/stages.tsv" 2>/dev/null || true
+}
+
+# Run profiles. recon.sh --fast/--deep/--max exports RECON_PRO_PROFILE, which
+# overrides the tuned defaults for that run only; the saved config is untouched.
+# --max raises concurrency, so keep it inside the rate the bounty program allows.
+apply_profile() {
+    local profile="${RECON_PRO_PROFILE:-}"
+    profile="${profile,,}"
+    case "$profile" in
+        ''|normal) return 0 ;;
+        fast)
+            THREADS=40; RATE_LIMIT=100; STAGE_TIMEOUT=600
+            X8_MAX_URLS=20; DALFOX_MAX_URLS=50; FUZZ_MAX_HOSTS=2; NMAP_MAX_HOSTS=5
+            CORS_MAX_URLS=20; EXPOSURE_MAX_HOSTS=5; JS_MAX_FILES=20
+            GRAPHQL_MAX_HOSTS=5; OPENREDIR_MAX_URLS=20; TAKEOVER_MAX_HOSTS=50
+            NUCLEI_AUTOCALIBRATE=0
+            ;;
+        deep)
+            THREADS=40; RATE_LIMIT=80; STAGE_TIMEOUT=3600
+            X8_MAX_URLS=80; DALFOX_MAX_URLS=300; FUZZ_MAX_HOSTS=10; NMAP_MAX_HOSTS=25
+            CORS_MAX_URLS=120; EXPOSURE_MAX_HOSTS=25; JS_MAX_FILES=100
+            GRAPHQL_MAX_HOSTS=25; OPENREDIR_MAX_URLS=100; TAKEOVER_MAX_HOSTS=500
+            NUCLEI_AUTOCALIBRATE=1
+            ;;
+        max)
+            THREADS=80; RATE_LIMIT=150; STAGE_TIMEOUT=7200
+            X8_MAX_URLS=150; DALFOX_MAX_URLS=600; FUZZ_MAX_HOSTS=25; NMAP_MAX_HOSTS=50
+            CORS_MAX_URLS=250; EXPOSURE_MAX_HOSTS=50; JS_MAX_FILES=250
+            GRAPHQL_MAX_HOSTS=50; OPENREDIR_MAX_URLS=250; TAKEOVER_MAX_HOSTS=1000
+            NUCLEI_AUTOCALIBRATE=1
+            ;;
+        *)
+            log WARN "Profil tidak dikenal: ${profile}. Memakai pengaturan config."
+            return 0
+            ;;
+    esac
+    log INFO "Profil run: ${profile} · threads ${THREADS} · rate ${RATE_LIMIT}/s · timeout stage ${STAGE_TIMEOUT}s."
+    log INFO "Pastikan angka itu masih di dalam batas laju yang diizinkan program bounty."
+    return 0
 }
 
 # Hides proxy credentials in a command line before it is written to a log or a
@@ -3172,8 +3224,8 @@ build_markdown_report() {
         printf 'Passive collection first (subdomain sources, certificate transparency, certificate SANs), then DNS validation, HTTP probing, and confirmation stages. ' 
         printf 'A finding is written as `confirmed` only when a second signal proved it; everything else stays an observation.\n\n'
         if [[ -s "$OUTPUT_DIR/logs/stages.tsv" ]]; then
-            printf '| Stage | Result | Detail |\n| --- | --- | --- |\n'
-            awk -F'\t' '{ printf "| %s | %s | %s |\n", $1, $2, $3 }' "$OUTPUT_DIR/logs/stages.tsv"
+            printf '| Stage | Result | Time | Detail |\n| --- | --- | --- | --- |\n'
+            awk -F'\t' '{ t = ($4 == "" ? "-" : $4 "s"); printf "| %s | %s | %s | %s |\n", $1, $2, t, $3 }' "$OUTPUT_DIR/logs/stages.tsv"
             printf '\n'
         fi
 
@@ -3415,7 +3467,7 @@ module_report() {
         fi
         if [[ -s "$OUTPUT_DIR/logs/stages.tsv" ]]; then
             printf 'STAGE SUMMARY\n%s\n' "$(rule)"
-            awk -F'\t' '{ printf "%-9s %-9s %s\n", $1, $2, $3 }' "$OUTPUT_DIR/logs/stages.tsv"
+            awk -F'\t' '{ t = ($4 == "" ? "-" : $4 "s"); printf "%-10s %-9s %-7s %s\n", $1, $2, t, $3 }' "$OUTPUT_DIR/logs/stages.tsv"
             printf '\n'
         fi
 
@@ -3879,6 +3931,7 @@ test_proxies() {
 init_project_dirs
 
 load_config
+apply_profile
 load_proxies || true
 # Bot-launched scans always send Telegram alerts back to the approved private
 # chat that issued the command, rather than a stale chat ID saved in config.

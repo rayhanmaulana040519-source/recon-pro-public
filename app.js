@@ -602,19 +602,34 @@
     catch (error) { toast(error.message, "error"); }
   }
 
+  function formatDuration(seconds) {
+    const total = Number(seconds) || 0;
+    if (total <= 0) return "—";
+    if (total < 60) return `${total}s`;
+    const minutes = Math.floor(total / 60);
+    const rest = total % 60;
+    return rest ? `${minutes}m ${rest}s` : `${minutes}m`;
+  }
+
   function renderStages(stages) {
     const rows = $("#stageRows"); rows.replaceChildren();
     text($("#stageCount"), `${stages.length} stage`);
     if (!stages.length) {
-      const tr = document.createElement("tr"); const td = document.createElement("td"); td.colSpan = 3; td.className = "table-empty"; td.textContent = "Tidak ada ringkasan stage untuk koleksi ini."; tr.appendChild(td); rows.appendChild(tr); return;
+      const tr = document.createElement("tr"); const td = document.createElement("td"); td.colSpan = 4; td.className = "table-empty"; td.textContent = "Tidak ada ringkasan stage untuk koleksi ini."; tr.appendChild(td); rows.appendChild(tr); return;
     }
+    const slowest = stages.reduce((best, stage) => ((stage.duration || 0) > (best.duration || 0) ? stage : best), stages[0]);
     stages.forEach((stage) => {
       const tr = document.createElement("tr");
       const name = document.createElement("td"); name.className = "stage-name"; name.textContent = stage.name;
       const status = document.createElement("td");
       const chip = document.createElement("span"); chip.className = `stage-chip stage-${stage.status}`; chip.textContent = stage.status.toUpperCase(); status.appendChild(chip);
+      const duration = document.createElement("td"); duration.className = "stage-duration"; duration.textContent = formatDuration(stage.duration);
       const note = document.createElement("td"); note.className = "stage-note"; note.textContent = stage.note || "—";
-      tr.append(name, status, note); rows.appendChild(tr);
+      if (stage === slowest && (stage.duration || 0) > 0) {
+        tr.classList.add("stage-slowest");
+        duration.title = "Stage paling lama pada run ini";
+      }
+      tr.append(name, status, duration, note); rows.appendChild(tr);
     });
   }
 
