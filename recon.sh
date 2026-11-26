@@ -10,7 +10,8 @@
 #   bash recon.sh --report [domain]   detail bug dari kedua laporan
 #   bash recon.sh --log [domain]      log scan, ringkasan stage, error
 #   bash recon.sh --tools             tool + toolkit Python yang terpasang
-#   bash recon.sh --web               jalankan dashboard lokal (token dibuat otomatis)
+#   bash recon.sh --web               dashboard foreground; Ctrl-C menghentikan
+#   bash recon.sh --web-restart       dashboard HTTP di background
 #   bash recon.sh --setup [opsi]      pasang/rapikan semua kebutuhan
 #   bash recon.sh --fix-tools         lengkapi tool yang belum ada (arsenal + Python)
 #   bash recon.sh                     menu interaktif
@@ -86,8 +87,8 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --log [domain]        log scan, ringkasan stage, error
   bash recon.sh --failures [domain]   hanya tool/stage yang gagal atau skip
   bash recon.sh --tools               tool + toolkit Python terpasang
-  bash recon.sh --web                 jalankan dashboard lokal (token dibuat otomatis)
-  bash recon.sh --web-restart         stop + jalankan dashboard di background
+  bash recon.sh --web                 dashboard foreground (Ctrl-C menghentikan)
+  bash recon.sh --web-restart         start ulang dashboard HTTP di background
   bash recon.sh --web-stop            hentikan dashboard yang jalan
   bash recon.sh --web-token           tampilkan URL + token dashboard
   bash recon.sh --web-install-service dashboard jadi service systemd (hidup setelah reboot)
@@ -107,9 +108,8 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --clean [folder]      lihat file sampah (arsip unduhan, output lama)
   bash recon.sh --clean --apply       hapus file sampah yang terdaftar tadi
   bash recon.sh --disk                apa yang benar-benar memenuhi disk
-  bash recon.sh --doctor              kesehatan sistem: update, tool, key, TLS, dashboard
-  bash recon.sh --ssl [host]          buat sertifikat TLS untuk dashboard (HTTPS)
-  bash recon.sh --no-ssl              hapus sertifikat, kembali ke HTTP biasa
+  bash recon.sh --doctor              kesehatan sistem: update, tool, key, disk, dashboard HTTP
+  bash recon.sh --no-ssl              hapus sisa sertifikat dan restart dashboard HTTP
   bash recon.sh --api-key [NAMA]      simpan API key collector (default PDCP_API_KEY)
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
@@ -496,63 +496,7 @@ show_clean() {
     return 0
 }
 
-# -------------------------------------------------------------------- TLS ----
-# Makes a certificate the dashboard can use. A self-signed one is enough for
-# direct access by IP; a real domain should get a real certificate (Cloudflare
-# Tunnel or certbot), otherwise every browser will warn.
-run_ssl() {
-    local host="${1:-}" dir="${RECON_HOME%/}/state/tls" port ip4 ip6 san
-    mkdir -p "$dir" "$STATE_DIR" 2>/dev/null || true
-    if ! command -v openssl >/dev/null 2>&1; then
-        fail "openssl tidak terpasang."
-        return 1
-    fi
-    [[ -n "$host" ]] || host="localhost"
-    port="${RECON_WEB_PORT:-8765}"
-
-    # Both stacks: a VPS may answer with IPv6 first, and a certificate should
-    # cover whichever address the browser is actually pointed at.
-    ip4=$(curl -4 -fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)
-    ip6=$(curl -6 -fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)
-    [[ "$ip4" =~ ^[0-9a-fA-F.:]+$ ]] || ip4=""
-    [[ "$ip6" =~ ^[0-9a-fA-F:]+$ ]] || ip6=""
-
-    san="DNS:${host}"
-    local extra
-    for extra in "DNS:localhost" "IP:127.0.0.1" "IP:::1" \
-                 "${ip4:+IP:${ip4}}" "${ip6:+IP:${ip6}}"; do
-        [[ -n "$extra" ]] || continue
-        case ",${san}," in
-            *",${extra},"*) continue ;;
-        esac
-        san="${san},${extra}"
-    done
-
-    info "Membuat sertifikat TLS self-signed untuk ${host} (SAN: ${san}) ..."
-    if openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "${dir}/key.pem" \
-        -out "${dir}/cert.pem" \
-        -days 825 -subj "/CN=${host}" \
-        -addext "subjectAltName=${san}" >>"$LOG_FILE" 2>&1 \
-        || openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "${dir}/key.pem" \
-        -out "${dir}/cert.pem" \
-        -days 825 -subj "/CN=${host}" >>"$LOG_FILE" 2>&1; then
-        chmod 600 "${dir}/key.pem" 2>/dev/null || true
-        ok "Sertifikat siap: ${dir}/cert.pem"
-        printf '  Buka   : https://%s:%s\n' "${ip4:-localhost}" "$port"
-        printf '  Catatan: self-signed, browser akan memperingatkan sekali.\n'
-        printf '  Tanpa peringatan: pakai domain + Cloudflare Tunnel (lihat vps_mcp/README.md),\n'
-        printf '  atau certbot: sudo apt-get install -y certbot && sudo certbot certonly --standalone -d <domain>\n'
-        printf '  lalu salin fullchain.pem ke %s/cert.pem dan privkey.pem ke %s/key.pem\n' "$dir" "$dir"
-        printf '  Restart dashboard supaya TLS dipakai: bash recon.sh --web\n'
-        return 0
-    fi
-    fail "Gagal membuat sertifikat (lihat ${LOG_FILE})."
-    return 1
-}
-
-# ---------------------------------------------------------------- api keys ---
+# --------------------------------------------------------------- API keys ----
 # The passive collectors read their keys from the environment; this keeps one
 # protected file so cron, the dashboard subprocess and manual runs all agree.
 set_api_key() {
@@ -621,30 +565,17 @@ web_stop() {
     return 0
 }
 
-# start.sh only enables TLS when both files exist, so this must use the same rule.
-web_scheme() {
-    if [[ -f "${RECON_HOME%/}/state/tls/cert.pem" && -f "${RECON_HOME%/}/state/tls/key.pem" ]]; then
-        printf 'https'
-    else
-        printf 'http'
-    fi
+# The dashboard is deliberately HTTP-only. Old certificates are deleted on
+# restart so no stale TLS setting can confuse the URL shown to the operator.
+web_clear_tls() {
+    local dir="${RECON_HOME%/}/state/tls"
+    rm -f -- "${dir}/cert.pem" "${dir}/key.pem" 2>/dev/null || true
+    rmdir -- "$dir" 2>/dev/null || true
 }
 
-# Tries the expected scheme first, then the other one, so a mismatch between
-# what the cert suggests and what the server actually serves is not reported as
-# "not answering". Sets WEB_READY_SCHEME to whichever answered.
 web_ready() {
-    local port="${RECON_WEB_PORT:-8765}" first other s
-    first=$(web_scheme)
-    if [[ "$first" == "https" ]]; then other="http"; else other="https"; fi
-    for s in "$first" "$other"; do
-        if curl -k -s -o /dev/null --max-time 3 "${s}://127.0.0.1:${port}/" 2>/dev/null; then
-            WEB_READY_SCHEME="$s"
-            return 0
-        fi
-    done
-    WEB_READY_SCHEME=""
-    return 1
+    local port="${RECON_WEB_PORT:-8765}"
+    curl -s -o /dev/null --max-time 3 "http://127.0.0.1:${port}/" 2>/dev/null
 }
 
 web_wait_ready() {
@@ -657,16 +588,10 @@ web_wait_ready() {
 }
 
 web_report_ready() {
-    local scheme port="${RECON_WEB_PORT:-8765}" token
-    scheme="${WEB_READY_SCHEME:-$(web_scheme)}"
-    ok "Dashboard siap: ${scheme}://127.0.0.1:${port}"
-    token=""
-    [[ -s "${STATE_DIR}/web_token" ]] && token=$(cat "${STATE_DIR}/web_token")
-    if [[ -z "$token" ]] && command -v journalctl >/dev/null 2>&1; then
-        token=$(journalctl -u recon-pro-web --no-pager -n 200 2>/dev/null \
-            | grep -o 'Token : .*' | tail -n 1 | cut -d' ' -f3-)
-    fi
-    [[ -n "$token" ]] && printf '  Token : %s\n' "$token"
+    local port="${RECON_WEB_PORT:-8765}"
+    ok "Dashboard siap: http://127.0.0.1:${port}"
+    printf '  Login token: bash recon.sh --web-token\n'
+    printf '  Akses VPS dari ponsel/laptop lewat SSH tunnel; jangan buka port 8765 ke internet.\n'
     printf '  Hentikan: bash recon.sh --web-stop\n'
 }
 
@@ -674,13 +599,19 @@ web_service_active() {
     command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet recon-pro-web.service 2>/dev/null
 }
 
+web_service_installed() {
+    command -v systemctl >/dev/null 2>&1 && systemctl cat recon-pro-web.service >/dev/null 2>&1
+}
+
 web_start() {
     local port="${RECON_WEB_PORT:-8765}" log_file="${STATE_DIR}/web.log"
-    # A systemd-managed dashboard must start through systemd; a second manual
-    # process would only fight it for the port.
-    if web_service_active; then
-        info "Dashboard dikelola systemd; restart lewat systemctl ..."
-        systemctl restart recon-pro-web.service 2>/dev/null || true
+    # If systemd owns this dashboard, never launch a competing nohup process.
+    if web_service_installed; then
+        info "Dashboard dikelola systemd; mulai ulang lewat systemctl ..."
+        if ! systemctl restart recon-pro-web.service; then
+            warn "Service gagal di-restart; lihat: sudo journalctl -u recon-pro-web -n 30 --no-pager"
+            return 1
+        fi
         if web_wait_ready; then
             web_report_ready
             return 0
@@ -690,49 +621,47 @@ web_start() {
     fi
     mkdir -p "$STATE_DIR" 2>/dev/null || true
     : >"$log_file" 2>/dev/null || true
-    info "Menjalankan dashboard di background (log: ${log_file}) ..."
+    info "Menjalankan dashboard HTTP di background (log: ${log_file}) ..."
     nohup bash "${SCRIPT_DIR}/web_ui/start.sh" >>"$log_file" 2>&1 &
     disown 2>/dev/null || true
     if web_wait_ready; then
         web_report_ready
         return 0
     fi
-    warn "Dashboard belum menjawab. Isi ${log_file}:"
-    tail -n 12 "$log_file" 2>/dev/null | while IFS= read -r line; do printf '    %s\n' "$line"; done
+    warn "Dashboard belum menjawab. Isi ${log_file} (token disamarkan):"
+    tail -n 12 "$log_file" 2>/dev/null \
+        | sed -E 's/Token[[:space:]]*:.*/Token : [REDACTED]/' \
+        | while IFS= read -r line; do printf '    %s\n' "$line"; done
     if grep -qi 'Address already in use' "$log_file" 2>/dev/null; then
-        printf '    Port %s dipakai proses lain. Hentikan dulu: bash recon.sh --web-stop\n' "$port"
+        printf '    Port %s dipakai proses lain. Cek: ss -ltnp | grep :%s\n' "$port" "$port"
     elif grep -qi 'ERROR' "$log_file" 2>/dev/null; then
-        printf '    Lihat pesan ERROR di atas; perbaiki lalu ulangi: bash recon.sh --web-restart\n'
+        printf '    Perbaiki pesan ERROR di atas lalu ulangi: bash recon.sh --web-restart\n'
     fi
     return 1
 }
 
 web_restart() {
-    if web_service_active; then
-        web_start
-        return $?
-    fi
+    web_clear_tls
     web_stop
     web_start
 }
 
-# Prints everything needed to explain "the dashboard is unreachable": the
-# process, the port, systemd, a local HTTP/HTTPS probe, the firewall and the
-# tail of the log. Paste the output and the cause is usually obvious.
+# Diagnoses the local HTTP listener. A remote browser still needs its own SSH tunnel.
 web_diag() {
-    local port="${RECON_WEB_PORT:-8765}" scheme s
-    scheme=$(web_scheme)
-    printf '=== WEB DIAG ===\n'
-    printf 'Port   : %s\n' "$port"
-    printf 'Bind   : %s (loopback = hanya lewat SSH tunnel)\n' "${RECON_WEB_HOST:-127.0.0.1}"
-    printf 'Scheme : %s\n' "$scheme"
+    local port="${RECON_WEB_PORT:-8765}" code service_status boot_status
+    printf '=== WEB DIAG (HTTP only) ===\n'
+    printf 'Port : %s\n' "$port"
+    printf 'Bind : 127.0.0.1 (akses remote hanya lewat SSH tunnel)\n'
 
     printf '\n-- proses --\n'
     pgrep -af 'web_ui/server.py' 2>/dev/null || printf '(tidak ada proses)\n'
 
     printf '\n-- systemd --\n'
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl is-active recon-pro-web.service 2>/dev/null || printf 'tidak aktif\n'
+        service_status=$(systemctl is-active recon-pro-web.service 2>/dev/null || true)
+        boot_status=$(systemctl is-enabled recon-pro-web.service 2>/dev/null || true)
+        printf 'Status: %s\n' "${service_status:-tidak aktif}"
+        printf 'Boot  : %s\n' "${boot_status:-tidak diaktifkan}"
     else
         printf '(systemd tidak ada)\n'
     fi
@@ -746,11 +675,14 @@ web_diag() {
         printf '(ss/netstat tidak ada)\n'
     fi
 
-    printf '\n-- curl localhost --\n'
-    for s in http https; do
-        printf '%s: ' "$s"
-        curl -k -s -o /dev/null -w '%{http_code}\n' --max-time 4 "${s}://127.0.0.1:${port}/" 2>/dev/null || printf 'gagal\n'
-    done
+    printf '\n-- HTTP lokal --\n'
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:${port}/" 2>/dev/null || true)
+    printf 'http://127.0.0.1:%s -> %s\n' "$port" "${code:-000}"
+    if [[ -z "$code" || "$code" == "000" ]]; then
+        printf 'Penyebab lokal: dashboard mati/tidak listen. Jalankan bash recon.sh --web-restart.\n'
+    else
+        printf 'Server merespons dari VPS; bila browser gagal, cek tunnel SSH dan port lokal.\n'
+    fi
 
     printf '\n-- firewall --\n'
     if command -v ufw >/dev/null 2>&1; then
@@ -759,13 +691,22 @@ web_diag() {
         printf '(ufw tidak ada)\n'
     fi
 
-    printf '\n-- log terakhir --\n'
-    tail -n 15 "${STATE_DIR}/web.log" 2>/dev/null || printf '(belum ada log)\n'
+    printf '\n-- log terakhir (token disamarkan) --\n'
+    if [[ -f "${STATE_DIR}/web.log" ]]; then
+        tail -n 15 "${STATE_DIR}/web.log" \
+            | sed -E 's/Token[[:space:]]*:.*/Token : [REDACTED]/'
+    else
+        printf '(belum ada log)\n'
+    fi
+    if command -v journalctl >/dev/null 2>&1 && web_service_installed; then
+        printf '\n-- journal service (token disamarkan) --\n'
+        journalctl -u recon-pro-web -n 12 --no-pager 2>/dev/null \
+            | sed -E 's/Token[[:space:]]*:.*/Token : [REDACTED]/'
+    fi
 
-    printf '\nCatatan: dashboard sengaja bind ke 127.0.0.1. Membuka http://<ip-vps>:%s\n' "$port"
-    printf 'dari HP tidak akan pernah berhasil; pakai SSH tunnel:\n'
-    printf '  ssh -N -L %s:127.0.0.1:%s root@<ip-vps>\n' "$port" "$port"
-    printf 'lalu buka http://127.0.0.1:%s di browser.\n' "$port"
+    printf '\nDashboard HTTP hanya mendengar di localhost. Dari ponsel/laptop, buat SSH tunnel\n'
+    printf 'pada perangkat browser lalu buka http://127.0.0.1:%s. Jika port lokal 8765 sibuk, gunakan 8766:\n' "$port"
+    printf '  ssh -N -L 8766:127.0.0.1:%s <user>@<ip-vps>\n' "$port"
     return 0
 }
 
@@ -781,6 +722,7 @@ web_install_service() {
         fail "systemd tidak tersedia di mesin ini."
         return 1
     fi
+    web_clear_tls
     # Keep the terminal page if the operator runs this with the shell enabled.
     if [[ "${RECON_WEB_ENABLE_SHELL:-}" == "1" ]]; then
         shell_env="Environment=RECON_WEB_ENABLE_SHELL=1"
@@ -799,7 +741,7 @@ RestartSec=5
 Environment=PYTHONUNBUFFERED=1
 # Pin the state directory: systemd does not always hand the same HOME to the
 # service as the shell that installed it, and a different RECON_PRO_HOME means
-# a different token file, log and certificate.
+# a different token file and log.
 Environment=RECON_PRO_HOME=${RECON_HOME}
 Environment=HOME=${HOME:-/root}
 ${shell_env}
@@ -817,9 +759,10 @@ EOF
     systemctl restart recon-pro-web.service || true
     sleep 2
     if systemctl is-active --quiet recon-pro-web.service; then
-        ok "Dashboard jalan sebagai service (recon-pro-web), otomatis hidup setelah reboot."
-        printf '  Lihat log: sudo journalctl -u recon-pro-web -n 30 --no-pager\n'
-        show_web_token
+        ok "Dashboard HTTP jalan sebagai service (recon-pro-web), otomatis hidup setelah reboot."
+        printf '  URL       : http://127.0.0.1:%s\n' "${RECON_WEB_PORT:-8765}"
+        printf '  Token     : ambil dengan bash recon.sh --web-token\n'
+        printf '  Lihat log : sudo journalctl -u recon-pro-web -n 30 --no-pager\n'
     else
         warn "Service gagal start; lihat: sudo journalctl -u recon-pro-web -n 30 --no-pager"
         return 1
@@ -827,12 +770,9 @@ EOF
     return 0
 }
 
-# Prints the URL and the access token without touching the server. Useful when a
-# browser lost its session: the HTTPS address is a different origin from the old
-# HTTP one, so the saved token does not carry over.
+# Prints the local HTTP URL and token only when explicitly requested.
 show_web_token() {
-    local scheme port="${RECON_WEB_PORT:-8765}" token_file="${STATE_DIR}/web_token" token=""
-    scheme=$(web_scheme)
+    local port="${RECON_WEB_PORT:-8765}" token_file="${STATE_DIR}/web_token" token=""
     [[ -s "$token_file" ]] && token=$(cat "$token_file")
     # A service started by an older unit may have used a different state
     # directory; the token it printed is still in its journal.
@@ -844,7 +784,7 @@ show_web_token() {
         fail "Token belum dibuat. Jalankan dulu: bash recon.sh --web-restart"
         return 1
     fi
-    printf 'URL   : %s://127.0.0.1:%s\n' "$scheme" "$port"
+    printf 'URL   : http://127.0.0.1:%s\n' "$port"
     printf 'Token : %s\n' "$token"
     if web_service_active; then
         printf 'Status: jalan sebagai service recon-pro-web\n'
@@ -854,22 +794,14 @@ show_web_token() {
         printf 'Status: jalan (PID %s)\n' "$(web_pids | tr '\n' ' ' | sed 's/ $//')"
     fi
     printf 'Catatan: token ini setara password dashboard; jangan dibagikan.\n'
-    printf 'Kalau browser masih meminta login setelah ganti http -> https, itu wajar:\n'
-    printf 'localStorage terpisah per origin, jadi masuk sekali lagi dengan token di atas.\n'
+    printf 'Akses dari perangkat lain perlu SSH tunnel ke VPS.\n'
     return 0
 }
 
-# Removes the self-signed certificate and restarts the dashboard, so it serves
-# plain HTTP again. For access through an SSH tunnel that is already encrypted,
-# this avoids the browser warning without losing anything.
+# Backward-compatible --no-ssl action. HTTP is now the only dashboard protocol.
 ssl_off() {
-    local dir="${RECON_HOME%/}/state/tls"
-    if [[ -f "$dir/cert.pem" || -f "$dir/key.pem" ]]; then
-        rm -f "$dir/cert.pem" "$dir/key.pem"
-        ok "Sertifikat TLS dihapus; dashboard kembali ke HTTP."
-    else
-        info "TLS memang belum aktif."
-    fi
+    web_clear_tls
+    info "Sisa sertifikat dashboard dibersihkan; mulai ulang dengan HTTP."
     web_restart
 }
 
@@ -1325,7 +1257,7 @@ update_repo() {
 }
 
 # ----------------------------------------------------------------- doctor ----
-# One screen of health: system, storage, updates, tools, keys, TLS, dashboard.
+# One screen of health: system, storage, updates, tools, keys and dashboard HTTP.
 # Read-only; nothing here changes the machine.
 doctor_line() {
     local color="$NC"
@@ -1338,8 +1270,7 @@ doctor_line() {
 
 show_doctor() {
     local os_name load mem_total mem_avail swap_total swap_free disk_use port
-    local upd_total upd_sec missing_tools py key_names keys_have cert cert_end cert_days
-    local scheme code pid domain
+    local upd_total upd_sec missing_tools py key_names keys_have code pid domain
     DOCTOR_WARN=0
     port="${RECON_WEB_PORT:-8765}"
 
@@ -1422,33 +1353,13 @@ show_doctor() {
         doctor_line "API key" "belum ada — bash recon.sh --api-key" info
     fi
 
-    cert="${RECON_HOME%/}/state/tls/cert.pem"
-    scheme="http"
-    if [[ -f "$cert" ]]; then
-        scheme="https"
-        cert_end=$(openssl x509 -noout -enddate -in "$cert" 2>/dev/null | cut -d= -f2)
-        cert_days=""
-        if [[ -n "$cert_end" ]]; then
-            local end_epoch
-            end_epoch=$(date -d "$cert_end" +%s 2>/dev/null || true)
-            [[ -n "$end_epoch" ]] && cert_days=$(( (end_epoch - $(date +%s)) / 86400 ))
-        fi
-        if [[ -n "$cert_days" ]] && (( cert_days < 14 )); then
-            doctor_line "TLS" "sertifikat habis dalam ${cert_days} hari — bash recon.sh --ssl" warn
-        else
-            doctor_line "TLS" "aktif${cert_days:+, ${cert_days} hari lagi}" ok
-        fi
-    else
-        doctor_line "TLS" "belum ada sertifikat — bash recon.sh --ssl (opsional)" info
-    fi
-
-    code=$(curl -k -s -o /dev/null -w '%{http_code}' --max-time 5 "${scheme}://127.0.0.1:${port}/" 2>/dev/null || true)
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:${port}/" 2>/dev/null || true)
     if [[ "$code" == "200" ]]; then
-        doctor_line "Dashboard" "${scheme}://127.0.0.1:${port} menjawab 200" ok
+        doctor_line "Dashboard HTTP" "localhost:${port} menjawab 200" ok
     elif [[ -n "$code" && "$code" != "000" ]]; then
-        doctor_line "Dashboard" "${scheme}://127.0.0.1:${port} menjawab ${code}" info
+        doctor_line "Dashboard HTTP" "localhost:${port} menjawab ${code}" info
     else
-        doctor_line "Dashboard" "tidak menjawab — bash recon.sh --web" info
+        doctor_line "Dashboard HTTP" "tidak berjalan — bash recon.sh --web-restart; akses VPS lewat SSH tunnel" warn
     fi
 
     pid=$(tr -dc '0-9' < "$RECON_HOME/state/bot/bot.lock" 2>/dev/null)
@@ -1591,7 +1502,6 @@ NO_SETUP=0
 NO_PASSIVE=0
 CLEAN_APPLY=0
 CLEAN_DIR="${HOME:-/root}"
-HOST_NAME=""
 KEY_NAME="PDCP_API_KEY"
 PROFILE=""
 
@@ -1613,11 +1523,8 @@ while (( $# )); do
         --disk|--storage) ACTION="disk" ;;
         --doctor|--health) ACTION="doctor" ;;
         --ssl|--tls)
-            ACTION="ssl"
-            if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
-                HOST_NAME="$2"
-                shift
-            fi
+            ACTION="ssldisabled"
+            if [[ -n "${2:-}" && "${2:-}" != -* ]]; then shift; fi
             ;;
         --no-ssl|--ssl-off) ACTION="nossl" ;;
         --api-key|--set-key)
@@ -1717,9 +1624,9 @@ case "$ACTION" in
         show_doctor
         exit $?
         ;;
-    ssl)
-        run_ssl "$HOST_NAME"
-        exit $?
+    ssldisabled)
+        fail "SSL/TLS dashboard sudah dihapus. Dashboard memakai HTTP lewat SSH tunnel saja."
+        exit 2
         ;;
     nossl)
         ssl_off

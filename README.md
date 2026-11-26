@@ -49,10 +49,9 @@ bash recon.sh --fix-tools             # lengkapi tool yang belum ada (arsenal + 
 bash recon.sh --clean                 # daftar file sampah (arsip unduhan, output lama)
 bash recon.sh --clean --apply         # hapus daftar itu, dengan konfirmasi
 bash recon.sh --disk                  # lihat apa yang memenuhi penyimpanan
-bash recon.sh --doctor                # kesehatan: update, tool, key, TLS, dashboard
-bash recon.sh --web-restart           # stop + jalankan dashboard di background
-bash recon.sh --ssl example.com       # sertifikat TLS untuk dashboard (HTTPS)
-bash recon.sh --no-ssl                # hapus sertifikat, kembali ke HTTP
+bash recon.sh --doctor                # kesehatan: update, tool, key, disk, dashboard HTTP
+bash recon.sh --web-restart           # hapus sisa sertifikat dan jalankan dashboard HTTP di background
+bash recon.sh --no-ssl                # alias lama untuk restart dashboard HTTP
 bash recon.sh --api-key               # simpan API key collector (PDCP_API_KEY / OTX / Cert Spotter)
 bash recon.sh --no-setup example.com  # jangan pasang apa pun, langsung scan
 bash recon.sh                         # menu interaktif (scan bertahap, settings, proxy)
@@ -276,20 +275,20 @@ Dashboard berjalan pada mesin yang sama dengan scanner. Tidak ada scan yang dija
 
 ### Jalankan di VPS Linux
 
-Setelah repository tersedia, cukup jalankan:
+Untuk dashboard yang tetap berjalan setelah perintah selesai:
 
 ```bash
 bash setup.sh                 # sekali saja, bila tool Recon Pro belum dipasang
-bash recon.sh --web
+bash recon.sh --web-restart   # mulai di background, HTTP saja
 ```
 
-Buka `http://127.0.0.1:8765`. Launcher membuat token aman otomatis, menyimpannya di `state/web_token` dengan izin privat, lalu menampilkan token untuk login. Hentikan dengan `Ctrl-C`. Untuk akses dari laptop/ponsel, biarkan server bind lokal dan gunakan SSH tunnel:
+Dashboard sengaja hanya bind ke `127.0.0.1`; membuka IP VPS langsung tidak akan berhasil. Dari ponsel/laptop, jalankan tunnel di perangkat yang browser-nya dipakai dan biarkan sesi SSH tetap terbuka:
 
 ```bash
-ssh -L 8765:127.0.0.1:8765 user@alamat-vps
+ssh -N -L 8765:127.0.0.1:8765 user@alamat-vps
 ```
 
-Lalu buka `http://127.0.0.1:8765` pada perangkat yang membuat tunnel.
+Lalu buka `http://127.0.0.1:8765` di perangkat itu. Jika port lokal 8765 sudah dipakai, gunakan `-L 8766:127.0.0.1:8765` dan buka `http://127.0.0.1:8766`. Ambil token dengan `bash recon.sh --web-token`; token disimpan privat. Untuk menghentikan dashboard gunakan `bash recon.sh --web-stop`, bukan `Ctrl-C` pada sesi VPS.
 
 ### Jalankan di Termux / Android
 
@@ -306,14 +305,14 @@ Alias `bash recon.sh --dashboard` dan launcher langsung `bash web_ui/start.sh` j
 
 ### Penggunaan & keamanan
 
-- Masukkan token yang ditampilkan launcher. Token server disimpan di `state/web_token` dengan izin owner-only agar tidak perlu dibuat ulang; token sesi browser hanya berada di `sessionStorage`, dan API meminta autentikasi pada setiap panggilan.
-- Dashboard bind ke `127.0.0.1` secara default. Gunakan SSH tunnel untuk akses VPS. Jangan membuka port server langsung ke internet.
-- Bila harus memasang reverse proxy, batasi firewall dan pakai TLS. Bind non-local memerlukan `RECON_WEB_ALLOW_REMOTE=1` serta `RECON_WEB_ALLOWED_HOSTS` yang berisi hostname persis; server dashboard sendiri tidak menyediakan TLS.
+- Token server disimpan di `state/web_token` dengan izin owner-only. Lihat secara eksplisit dengan `bash recon.sh --web-token`; API meminta autentikasi pada setiap panggilan.
+- Dashboard HTTP hanya bind ke `127.0.0.1`. Untuk VPS, akses melalui SSH tunnel; tidak ada sertifikat SSL/TLS lokal dan jangan membuka port dashboard ke internet.
+- Bind non-local dinonaktifkan agar dashboard HTTP dan fitur terminal tidak terekspos ke jaringan. Gunakan SSH tunnel untuk akses jarak jauh.
 - Tambahkan hanya apex yang eksplisit diizinkan program bounty ke Scope & Proxy. Daftar disimpan pada `~/recon_pro/state/scope.txt`; setiap pemindaian memerlukan konfirmasi operator dan server memeriksa ulang allowlist serta `state/exclusions.txt`.
 - Pipeline lengkap dapat melakukan pemeriksaan aktif. Passive saja membatasi kerja ke toolkit OSINT dan pemeriksaan header. Scan web selalu memakai `--no-setup`, sehingga instalasi tool tidak dijalankan dari UI.
 - Proxy dapat dikelola dari halaman Scope & Proxy. Kredensial tidak dikembalikan pada daftar ringkas, file disimpan dengan izin owner-only, dan log yang ditampilkan menyamarkan pola kredensial yang dikenal. DNS dan nmap tetap tidak melalui proxy.
 - Server memakai Python standard library saja. Kebutuhan Recon Pro (Bash, scanner dan dependensi toolkit pasif) tetap harus dipasang di host terlebih dahulu.
-- Halaman **Terminal VPS** menjalankan perintah Bash yang diketik operator dan menampilkan output live; direktori kerja dapat dipilih (default `/`, seluruh filesystem dapat diakses sesuai hak akun dashboard). Aktifkan secara eksplisit dengan `RECON_WEB_ENABLE_SHELL=1 bash recon.sh --web`. Terminal hanya tersedia saat bind ke loopback, memakai token dashboard, hanya menjalankan satu perintah sekaligus, dan tidak menerima stdin/TTY interaktif; pilihan direktori berlaku pada sesi browser, sedangkan `cd` di dalam command hanya berlaku untuk command itu. Shell memiliki hak akun Linux dashboard (termasuk root) serta melewati allowlist scope UI; jangan pernah mengekspos dashboard ke internet dan gunakan hanya pada aset yang berizin. Scan dashboard dan command shell saling mengunci agar tidak berjalan bersamaan.
+- Halaman **Terminal VPS** menjalankan perintah Bash yang diketik operator dan menampilkan output live; direktori kerja dapat dipilih (default `/`, seluruh filesystem dapat diakses sesuai hak akun dashboard). Aktifkan secara eksplisit dengan `RECON_WEB_ENABLE_SHELL=1 bash recon.sh --web-restart`; jika dashboard dikelola systemd, pasang ulang unit dengan `sudo env RECON_WEB_ENABLE_SHELL=1 bash recon.sh --web-install-service`. Terminal hanya tersedia pada bind loopback, memakai token dashboard, hanya menjalankan satu perintah sekaligus, dan tidak menerima stdin/TTY interaktif; pilihan direktori berlaku pada sesi browser, sedangkan `cd` di dalam command hanya berlaku untuk command itu. Shell memiliki hak akun Linux dashboard (termasuk root) serta melewati allowlist scope UI; jangan pernah mengekspos dashboard ke internet dan gunakan hanya pada aset yang berizin. Scan dashboard dan command shell saling mengunci agar tidak berjalan bersamaan.
 - Tab **Arsenal** memuat katalog tool beserta status terpasang, perintah pemasangan, dan perintah uji ber-volume rendah: skipfish, gobuster, feroxbuster, dirsearch, ffuf, nuclei, nikto, whatweb, wafw00f, sqlmap, wpscan, commix, dalfox, arjun, x8, subfinder, amass, chaos, dnsx, httpx, katana, gau, tlsx, naabu, dan nmap. Domain scope terpilih disisipkan ke placeholder `{{TARGET}}`. Tombol **Kirim ke terminal** hanya mengisi kolom perintah pada tab Terminal VPS — operator tetap meninjau dan mengonfirmasi sebelum menjalankan. Katalog bersifat baca-saja melalui `GET /api/arsenal`. Antarmuka memakai tema terminal gelap (scanline CRT, matrix rain, judul glitch, jam operasi) yang animasinya otomatis berhenti bila sistem meminta `prefers-reduced-motion`.
 - Tab **Laporan** memungkinkan pemilihan target, riwayat run, lalu setiap file laporan final; laporan pasif Markdown/JSON historis juga tersedia. Tab **Log aktivitas** menampilkan file pipeline dan semua error per stage pada run terpilih. `toolkit.log` beserta rotasinya adalah log global toolkit pasif, bukan log per-run.
 - Opsional: koneksi MCP updater VPS hanya menyediakan satu aksi tetap untuk `git pull` dan self-test; tidak menyediakan shell. Lihat [panduan MCP updater](vps_mcp/README.md) untuk Cloudflare named tunnel yang persisten atau Quick Tunnel sementara.
@@ -321,4 +320,4 @@ Alias `bash recon.sh --dashboard` dan launcher langsung `bash web_ui/start.sh` j
 - Riwayat mengikuti pengaturan `OUTPUT_BASE` pada `state/recon_pro.conf`, termasuk jika folder run dipindahkan. Run lama yang sudah dihapus oleh `KEEP_RUNS` tidak dapat dipulihkan dari dashboard.
 - Tombol Run FreeMilk hanya menampilkan UI statis dan tidak dapat mengakses scanner lokal. Untuk pemindaian, buka alamat lokal VPS/Termux sesuai langkah di atas.
 
-Konfigurasi opsional: `RECON_PRO_HOME` memindahkan folder data yang sama dengan pipeline; `RECON_WEB_HOST`, `RECON_WEB_PORT`, `BUGBOUNTY_SCOPE_FILE`, dan `RECON_WEB_ALLOWED_HOSTS` dapat diatur sesuai lingkungan.
+Konfigurasi opsional: `RECON_PRO_HOME` memindahkan folder data yang sama dengan pipeline; `RECON_WEB_HOST` harus tetap loopback (`127.0.0.1` atau `localhost`), sedangkan `RECON_WEB_PORT` dan `BUGBOUNTY_SCOPE_FILE` dapat diatur sesuai lingkungan.
