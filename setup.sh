@@ -406,6 +406,59 @@ install_apt_package() {
     esac
 }
 
+fetch_url() {
+    local url="$1" dest="$2"
+    if have curl; then
+        curl -fsSL --retry 3 --max-time 60 -o "$dest" "$url" >>"$LOG_FILE" 2>&1 && return 0
+    fi
+    if have wget; then
+        wget -q -O "$dest" "$url" >>"$LOG_FILE" 2>&1 && return 0
+    fi
+    return 1
+}
+
+# The two fixes Kali carries for skipfish (Apache-2.0 code, patches published
+# under https://gitlab.com/kalilinux/packages/skipfish). Without them the 2012
+# source cannot compile against OpenSSL 1.1+ or link with modern GCC defaults.
+skipfish_patch_url() {
+    printf 'https://gitlab.com/kalilinux/packages/skipfish/-/raw/kali/master/debian/patches/%s' "$1"
+}
+
+apply_skipfish_patches() {
+    local src="$1" cache="${STATE_DIR}/skipfish-patches" first second
+    mkdir -p -- "$cache" 2>/dev/null || true
+
+    # OpenSSL 1.1+ made SSL_CIPHER and X509 opaque; GCC 10+ stopped accepting
+    # the duplicate tentative definitions the 2012 headers rely on.
+    if grep -q 'X509_get_notBefore' "${src}/src/http_client.c" 2>/dev/null; then
+        info "skipfish: sumber sudah berisi patch OpenSSL/GCC"
+        return 0
+    fi
+
+    first="${cache}/fix-openssl.patch"
+    second="${cache}/fix-ciphers.patch"
+    [[ -s "$first" ]] || fetch_url "$(skipfish_patch_url Fix-for-openssl-1.1.patch)" "$first" || true
+    if [[ ! -s "$first" ]]; then
+        warn "skipfish: patch OpenSSL tidak dapat diunduh; kompilasi akan gagal di OpenSSL 1.1+"
+        return 0
+    fi
+    if ! run_root patch -p1 --forward -d "$src" <"$first" >>"$LOG_FILE" 2>&1; then
+        warn "skipfish: patch OpenSSL gagal diterapkan (lihat ${LOG_FILE})"
+        return 0
+    fi
+    [[ -s "$second" ]] || fetch_url "$(skipfish_patch_url Fix-broken-ciphersuite-evaluation-for-newer-OpenSSLs.patch)" "$second" || true
+    if [[ -s "$second" ]]; then
+        if run_root patch -p1 --forward -d "$src" <"$second" >>"$LOG_FILE" 2>&1; then
+            ok "Patch OpenSSL/GCC skipfish diterapkan"
+        else
+            warn "skipfish: patch ciphersuite gagal (lihat ${LOG_FILE})"
+        fi
+    else
+        warn "skipfish: patch ciphersuite tidak dapat diunduh; build tetap dicoba"
+    fi
+    return 0
+}
+
 install_skipfish() {
     if have skipfish; then
         ok "skipfish"
@@ -415,8 +468,8 @@ install_skipfish() {
         ok "skipfish"
         return 0
     fi
-    # Ubuntu dropped the package; Debian/Kali still ship it. Build the official
-    # 2.10b source in that case (needs openssl, zlib, idn and pcre headers).
+    # Debian ships the package, Ubuntu dropped it. Building the official 2.10b
+    # source needs openssl, zlib, idn, pcre headers and the Kali patches.
     if ! have git || ! have make || ! have cc; then
         info "Memasang prasyarat build skipfish ..."
         install_apt_package git || true
@@ -427,7 +480,7 @@ install_skipfish() {
     # available as the libpcre3-dev compatibility build. A name that does not
     # exist is skipped silently, so trying all of them is cheap.
     local pkg
-    for pkg in pkg-config libssl-dev zlib1g-dev \
+    for pkg in pkg-config libssl-dev zlib1g-dev patch \
                libpcre3-dev libpcre-dev libidn11-dev libidn12-dev libidn-dev; do
         install_apt_package "$pkg" || true
     done
@@ -443,15 +496,31 @@ install_skipfish() {
             return 0
         fi
     fi
+
+    apply_skipfish_patches "$src"
+
     info "Membangun skipfish dari sumber (2.10b) ..."
-    if run_root make -C "$src" >"$build_log" 2>&1; then
-        run_root ln -sf "${src}/skipfish" /usr/local/bin/skipfish >>"$LOG_FILE" 2>&1 || true
+    # Never inherit the caller's flags: a -Werror from the environment would
+    # break this 2012 code.
+    run_root env -u CFLAGS -u CXXFLAGS make -C "$src" clean >>"$LOG_FILE" 2>&1 || true
+    if run_root env -u CFLAGS -u CXXFLAGS make -C "$src" >"$build_log" 2>&1; then
+        # skipfish loads assets/ and signatures/ relative to its working
+        # directory, so a plain symlink would only work from one folder.
+        local wrapper="${STATE_DIR}/skipfish-wrapper.sh"
+        {
+            printf '#!/bin/sh\n'
+            printf '# skipfish 2.10b reads assets/ and signatures/ relative to its\n'
+            printf '# working directory, so it always starts from its source tree.\n'
+            printf 'cd %s || exit 1\n' "$src"
+            printf 'exec ./skipfish "$@"\n'
+        } >"$wrapper"
+        run_root install -D -m 755 "$wrapper" /usr/local/bin/skipfish >>"$LOG_FILE" 2>&1 || true
         run_root mkdir -p /usr/local/share/skipfish >>"$LOG_FILE" 2>&1 || true
         if [[ -d "${src}/dictionaries" ]]; then
             run_root ln -sfn "${src}/dictionaries" /usr/local/share/skipfish/dictionaries >>"$LOG_FILE" 2>&1 || true
         fi
         if have skipfish; then
-            ok "skipfish (build 2.10b)"
+            ok "skipfish (build 2.10b, patched)"
             return 0
         fi
     fi
@@ -587,12 +656,32 @@ install_wpscan() {
             || warn "nokogiri pre-compiled tidak tersedia; gem wpscan akan mencoba kompilasi sendiri"
     fi
     info "Memasang wpscan lewat gem (Ruby, bisa beberapa menit) ..."
-    if run_root gem install --no-document wpscan >"$gem_log" 2>&1 && have wpscan; then
+    if ! run_root gem install --no-document wpscan >>"$gem_log" 2>&1; then
+        # On Ruby 3.x the dependency resolver can pick a yajl-ruby release that
+        # no longer builds; pinning the last compatible one clears that up.
+        info "wpscan: mencoba yajl-ruby 1.4.3 lebih dulu ..."
+        run_root gem install --no-document yajl-ruby -v 1.4.3 >>"$gem_log" 2>&1 || true
+        run_root gem install --no-document wpscan >>"$gem_log" 2>&1 || true
+    fi
+    if have wpscan; then
+        ok "wpscan"
+        return 0
+    fi
+    # Some RubyGems setups put the executable outside PATH.
+    local candidate
+    for candidate in /usr/local/bin/wpscan "${HOME}/.local/bin/wpscan" /root/.local/bin/wpscan; do
+        if [[ -x "$candidate" ]]; then
+            run_root ln -sf "$candidate" /usr/local/bin/wpscan >>"$LOG_FILE" 2>&1 || true
+            break
+        fi
+    done
+    if have wpscan; then
         ok "wpscan"
         return 0
     fi
     warn "wpscan gagal dipasang; ringkasan error:"
-    tail -n 6 "$gem_log" 2>/dev/null | while IFS= read -r line; do printf '    %s\n' "$line"; done
+    grep -iE '^ERROR|Error installing|error:' "$gem_log" 2>/dev/null | head -n 6 \
+        | while IFS= read -r line; do printf '    %s\n' "$line"; done
     printf '    Log lengkap: %s\n' "$gem_log"
     return 0
 }
