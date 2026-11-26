@@ -39,6 +39,14 @@ STATE_DIR="${RECON_HOME%/}/state"
 CONFIG_FILE="${STATE_DIR}/recon_pro.conf"
 LOG_FILE="${STATE_DIR%/}/recon.log"
 
+# `go install` puts tools in ~/go/bin, which a fresh shell or a systemd unit
+# does not have on PATH. Add the usual locations up front so every stage and
+# every listing sees the same tools.
+for _gobin in "/root/go/bin" "/usr/local/go/bin" "${HOME:-.}/go/bin"; do
+    [[ -d "$_gobin" ]] && PATH="${_gobin}:${PATH}"
+done
+unset _gobin
+
 TOOLKIT_DIR="${SCRIPT_DIR}/bugbounty-toolkit"
 TOOLKIT_SCOPE="${TOOLKIT_DIR}/data/extra_scope.txt"
 PASSIVE_REPORT=""

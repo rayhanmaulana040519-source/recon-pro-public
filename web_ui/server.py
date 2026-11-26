@@ -370,16 +370,22 @@ def _findings_count(domain: str | None) -> int:
 
 
 def _which(name: str) -> str | None:
-    """Resolve a tool on PATH, then in ~/.local/bin (where pipx installs)."""
+    """Resolve a tool on PATH, then where pipx and `go install` put binaries."""
     found = shutil.which(name)
     if found:
         return found
-    candidate = Path(os.path.expanduser("~/.local/bin")) / name
-    try:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    except OSError:
-        return None
+    candidates = [
+        Path(os.path.expanduser("~/.local/bin")) / name,
+        Path(os.path.expanduser("~/go/bin")) / name,
+        Path("/root/go/bin") / name,
+        Path("/usr/local/go/bin") / name,
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
     return None
 
 

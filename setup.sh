@@ -319,6 +319,17 @@ install_go_tools() {
             warn "$name gagal dipasang (detail: ${LOG_FILE})"
         fi
     done
+
+    # Go installs into ~/go/bin, which only shows up in an interactive shell
+    # that sourced .bashrc. Symlink into /usr/local/bin so systemd units, cron
+    # and the dashboard find the tools too.
+    local bin
+    while IFS= read -r bin; do
+        [[ -x "$bin" ]] || continue
+        run_root ln -sf "$bin" "/usr/local/bin/$(basename "$bin")" >>"$LOG_FILE" 2>&1 || true
+    done < <(find "$gobin" -maxdepth 1 -type f \( -perm -111 \) 2>/dev/null)
+    PATH="/usr/local/bin:${PATH}"
+    export PATH
     return 0
 }
 
