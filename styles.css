@@ -396,3 +396,40 @@ select,input,textarea{font-family:var(--mono)}
 @media(prefers-reduced-motion:reduce){
   .r3-banner-strip span,.r3-banner-word::before,.r3-banner-word::after{animation:none!important}
 }
+
+
+/* ------------------------------------------------ passive intel panel ---- */
+.passive-panel{margin-top:18px}
+.passive-source-grid{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 16px}
+.passive-source-chip{
+  display:inline-flex;align-items:center;padding:5px 12px;
+  border:1px solid rgba(57,255,20,.18);border-radius:999px;
+  background:rgba(57,255,20,.04);color:var(--text-dim,#9fb8a0);
+  font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+  font-family:ui-monospace,monospace;
+}
+.passive-source-chip.chip-hot{
+  border-color:rgba(57,255,20,.45);color:#39ff14;background:rgba(57,255,20,.09);
+  box-shadow:0 0 12px rgba(57,255,20,.12);
+}
+.passive-stats{
+  display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;
+}
+.passive-stat{
+  border:1px solid rgba(255,255,255,.06);border-radius:10px;
+  padding:10px 8px;text-align:center;background:rgba(255,255,255,.02);
+}
+.passive-stat b{
+  display:block;font-size:17px;color:#e6ffe0;font-family:ui-monospace,monospace;
+}
+.passive-stat small{font-size:9px;letter-spacing:.14em;color:#7f9a80;text-transform:uppercase}
+.passive-stat .axfr-hot{color:#ff5252;text-shadow:0 0 10px rgba(255,82,82,.5)}
+.passive-stat .dmarc-missing{color:#ffc857}
+.passive-note{margin:14px 0 0;font-size:11px;color:#7f9a80}
+@media(max-width:820px){
+  .passive-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:560px){
+  .passive-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .passive-source-chip{font-size:10px;padding:4px 9px}
+}

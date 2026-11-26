@@ -92,6 +92,22 @@ class HistoryManager:
         changes += self._diff_headers(previous, current)
         changes += self._diff_certificate(previous, current)
         changes += self._diff_dns(previous, current)
+        changes += self._diff_set(
+            "archived_url",
+            "archived URL added",
+            "archived URL removed",
+            previous.get("archived_urls", []) or [],
+            current.get("archived_urls", []) or [],
+            significance="low",
+        )
+        changes += self._diff_set(
+            "live_subdomain",
+            "host started resolving",
+            "host stopped resolving",
+            previous.get("live_subdomains", []) or [],
+            current.get("live_subdomains", []) or [],
+            significance="medium",
+        )
         return changes
 
     # -- helpers --------------------------------------------------------------

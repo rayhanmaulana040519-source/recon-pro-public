@@ -140,7 +140,70 @@
 
   async function refreshAll() {
     await Promise.all([loadStatus(), loadScope(), loadTools(), loadProxies()]);
-    await Promise.all([refreshOutput(), refreshShellOutput()]);
+    await Promise.all([refreshOutput(), refreshShellOutput(), loadPassiveSummary()]);
+  }
+
+  const PASSIVE_SOURCE_LABELS = {
+    crtsh: "crt.sh", certspotter: "Cert Spotter", wayback: "Wayback", wayback_urls: "Wayback URL",
+    otx: "OTX", anubis: "Anubis", rapiddns: "RapidDNS", commoncrawl_urls: "Common Crawl",
+  };
+
+  function passiveTarget() {
+    const report = $("#reportTarget");
+    const chosen = report && report.value ? report.value : "";
+    return chosen || (state.targets[0] && state.targets[0].domain) || "";
+  }
+
+  function renderPassive(summary) {
+    text($("#passiveCollected"), summary.collected_at ? `Snapshot ${String(summary.collected_at).replace("T", " ").slice(0, 19)} UTC` : "—");
+    const chips = $("#passiveSourceChips");
+    if (chips) {
+      chips.replaceChildren();
+      const entries = Object.entries(summary.sources || {});
+      if (!entries.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty-inline";
+        empty.textContent = "Snapshot belum menyertakan rincian sumber.";
+        chips.appendChild(empty);
+      }
+      entries.forEach(([key, value]) => {
+        const chip = document.createElement("span");
+        chip.className = `passive-source-chip${Number(value) > 0 ? " chip-hot" : ""}`;
+        chip.textContent = `${PASSIVE_SOURCE_LABELS[key] || key} · ${value}`;
+        chips.appendChild(chip);
+      });
+    }
+    text($("#passiveSubdomains"), summary.subdomains ?? 0);
+    text($("#passiveLive"), summary.live_subdomains ?? 0);
+    text($("#passiveArchived"), summary.archived_urls ?? 0);
+    text($("#passiveJs"), `${summary.js_scanned ?? 0} / ${summary.js_secrets ?? 0}`);
+    const axfrNode = $("#passiveAxfr");
+    text(axfrNode, summary.axfr ? "BOCOR" : "AMAN");
+    if (axfrNode) axfrNode.classList.toggle("axfr-hot", !!summary.axfr);
+    const dmarcNode = $("#passiveDmarc");
+    text(dmarcNode, summary.dmarc ? "AKTIF" : "HILANG");
+    if (dmarcNode) dmarcNode.classList.toggle("dmarc-missing", !summary.dmarc);
+    text($("#passiveNote"), summary.axfr
+      ? `AXFR berhasil di ${summary.axfr_ns || "nameserver"} — zona DNS bocor. Laporkan ke program dan tutup transfer.`
+      : "Panel memakai snapshot toolkit terbaru dari data/history.");
+  }
+
+  async function loadPassiveSummary() {
+    const target = passiveTarget();
+    if (!target) return;
+    try {
+      const data = await request(`/api/passive/summary?target=${encodeURIComponent(target)}`);
+      renderPassive(data.summary || {});
+    } catch (error) {
+      const chips = $("#passiveSourceChips");
+      if (chips) {
+        chips.replaceChildren();
+        const empty = document.createElement("div");
+        empty.className = "empty-inline";
+        empty.textContent = error.message;
+        chips.appendChild(empty);
+      }
+    }
   }
 
   async function loadStatus() {
@@ -774,6 +837,7 @@
     try {
       await loadStatus();
       await Promise.all([refreshOutput(), refreshShellOutput()]);
+      if (!document.querySelector('[data-view="overview"]') || document.querySelector('[data-view="overview"]:not(.hidden)')) await loadPassiveSummary();
       if ($("#logTarget").value && document.querySelector('[data-view="logs"]:not(.hidden)')) await loadLogs();
     } catch (error) {
       text($("#connectionText"), "Backend terputus");

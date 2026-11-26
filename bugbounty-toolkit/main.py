@@ -25,6 +25,7 @@ import yaml
 
 from modules.analyzer import Analyzer
 from modules.history_manager import HistoryManager
+from modules.js_intel import JsIntel
 from modules.notifier import Notifier
 from modules.passive_recon import PassiveRecon
 from modules.report_generator import ReportGenerator
@@ -99,6 +100,12 @@ def collect(
                 hosts.append(info)
                 logger.info("probed %s (%s)", name, info.get("status"))
     snapshot["hosts"] = hosts
+
+    # The JS pass re-reads the root page of probed hosts and follows only
+    # same-origin scripts, so it stays inside the host list just probed.
+    if hosts and bool((config.get("collectors", {}) or {}).get("js_intel", True)):
+        js_intel = JsIntel(http, logger, config)
+        snapshot["js_intel"] = js_intel.scan_hosts(hosts)
     return snapshot
 
 
@@ -132,7 +139,7 @@ def run_target(
 
     logger.info("scope accepted for %s", domain)
     if dry_run:
-        logger.info("dry run: would collect certificate transparency, DNS and RDAP for %s", domain)
+        logger.info("dry run: would collect crt.sh, Wayback CDX, OTX, DNS and RDAP for %s", domain)
         logger.info("dry run: would send one GET per host (max %s hosts)", (config.get("collectors", {}) or {}).get("max_hosts", 25))
         logger.info("dry run: no request was sent and no report was written")
         return {"target": domain, "allowed": True, "findings": [], "reports": {}}
@@ -158,7 +165,11 @@ def run_target(
             "proxy": "enabled" if http.proxies else "disabled (direct from this host)",
             "dns_note": "DNS lookups are not proxied and leave from this host; crt.sh, RDAP and HTTP probes use the configured proxy when enabled.",
             "methodology": [
-                "Certificate transparency (crt.sh) for subdomains and certificate dates.",
+                "Certificate transparency (crt.sh and Cert Spotter) for subdomains and certificate dates.",
+                "Wayback Machine CDX index (web.archive.org) and the newest Common Crawl index for archived URLs.",
+                "AlienVault OTX, Anubis and RapidDNS passive datasets for historical subdomains.",
+                "DNS liveness check over the discovered names, an AXFR attempt and DMARC/SPF policy data.",
+                "Same-origin JavaScript intelligence: exposed source maps and hard-coded credentials.",
                 "Public DNS records (A, AAAA, CNAME, MX, TXT, NS, SOA) via the system resolver.",
                 "Public registration data through RDAP (no WHOIS port 43 traffic).",
                 "One HTTP GET per host for headers, technology, cookies and a single CORS probe.",

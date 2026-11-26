@@ -11,7 +11,12 @@ check**, and nothing it does is more invasive than a browser visiting the site.
 | Stage | What it collects | How |
 | --- | --- | --- |
 | Scope check | allow / deny decision per target, with the reason | `modules/scope_checker.py`, logged to `data/history/scope_history.jsonl` |
-| Certificate transparency | subdomains, issuers, `not_before` / `not_after` | crt.sh, public JSON API |
+| Certificate transparency | subdomains, issuers, `not_before` / `not_after` | crt.sh + Cert Spotter, public APIs |
+| Wayback archive | archived URLs, historical hostnames | Wayback Machine CDX (`web.archive.org`), free, no key |
+| Common Crawl | archived URLs from the world-scale web archive | newest Common Crawl CDX index, free, no key |
+| Passive DNS | historical subdomains | AlienVault OTX, Anubis, RapidDNS — free, no key |
+| DNS policy | liveness of discovered names, AXFR attempt, DMARC/SPF | `dnspython`, read-only standard queries |
+| JavaScript intelligence | exposed source maps, hard-coded credentials | same-origin scripts of probed hosts, `modules/js_intel.py` |
 | DNS | A, AAAA, CNAME, MX, TXT, NS, SOA | system resolver via `dnspython` |
 | Registration data | registrar, status, nameservers, events | RDAP (`rdap.org`), no WHOIS port 43 |
 | HTTP header analysis | security headers, server, framework, cookies, CORS answer | one GET per host, root path only |
@@ -36,7 +41,8 @@ bugbounty-toolkit/
 │   └── config.yaml            # scope, rate limit, proxies, collectors, report
 ├── modules/
 │   ├── scope_checker.py       # strict allow/deny with an audit trail
-│   ├── passive_recon.py       # crt.sh, DNS, RDAP
+│   ├── passive_recon.py       # crt.sh, Cert Spotter, Wayback, Common Crawl, OTX, Anubis, RapidDNS, DNS, RDAP
+│   ├── js_intel.py            # same-origin scripts: source maps, hard-coded secrets
 │   ├── tech_detector.py       # headers, technology, cookies, CORS probe
 │   ├── history_manager.py     # snapshot storage + diff engine
 │   ├── analyzer.py            # rule engine that explains each finding
@@ -158,8 +164,8 @@ honest limitations:
 
 * **DNS is not proxied.** `dnsx`-style lookups and `dnspython` resolution go to
   the resolver directly, so the resolver still sees which names you asked for.
-* **RDAP and crt.sh are third-party services.** They see your IP (or your proxy's
-  IP) as any normal visitor would.
+* **RDAP, crt.sh, Cert Spotter, the Wayback CDX index and OTX are third-party
+  services.** They see your IP (or your proxy's IP) as any normal visitor would.
 
 A proxy hides your address from the target; it does not make you anonymous.
 

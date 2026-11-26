@@ -8,7 +8,7 @@
 
 project:
   name: "Passive Bug Bounty Toolkit"
-  version: "1.0.0"
+  version: "2.0.0"
   author: "rey"
 
 # -----------------------------------------------------------------------------
@@ -75,7 +75,53 @@ collectors:
   # HTTP header analysis: one GET per host, root path only, redirects followed.
   http_headers: true
   max_hosts: 25            # cap on hosts probed per target
-  max_subdomains: 2000     # cap on names kept from certificate transparency
+  max_subdomains: 2000     # cap on names kept from all sources combined
+
+  # Wayback Machine CDX index (web.archive.org): archived URLs and the
+  # hostnames they belonged to. Free, no API key. Archived URLs are a passive
+  # source of endpoints and parameters; hostnames widen the subdomain set.
+  wayback_cdx: true
+  max_archived_urls: 300   # cap on archived URLs kept per target
+
+  # AlienVault OTX passive DNS: hostnames that historically resolved for the
+  # domain. Free; an API key only raises the rate limit. The key is read from
+  # the environment variable named here and is never written to this file.
+  otx_passive_dns: true
+  otx_api_key_env: "OTX_API_KEY"
+
+  # Cert Spotter: a second certificate-transparency source. Free; an API key
+  # only raises the rate limit. Data merges with crt.sh, so it doubles as a
+  # crt.sh fallback.
+  certspotter: true
+  certspotter_api_key_env: "CERTSPOTTER_API_KEY"
+  max_certspotter_issuances: 100
+
+  # Client-side JavaScript intelligence: for probed hosts, read the page's own
+  # script tags, fetch only same-origin scripts, and look for exposed source
+  # maps and hard-coded credentials. Every request is a GET of a file the page
+  # already loads; scripts on other hosts (CDNs) are never fetched.
+  js_intel: true
+  max_js_files: 10         # cap on scripts fetched per host
+  js_intel_max_hosts: 10   # cap on hosts that get the JS pass
+
+  # Additional free, key-less public name sources. Every one is a different
+  # dataset of historically observed hostnames, so the union of all of them is
+  # wider than any single source.
+  anubis: true             # Anubis dataset (jldc.me)
+  rapiddns: true           # RapidDNS public index
+
+  # Common Crawl: the world-scale web archive. Adds archived URLs alongside
+  # the Wayback results.
+  commoncrawl: true
+  max_commoncrawl_urls: 200
+
+  # DNS policy checks. A liveness check resolves each discovered hostname once
+  # so historical noise separates from the live surface. An AXFR attempt is a
+  # single standard DNS request: a correctly configured nameserver refuses it,
+  # and one that answers exposes the whole zone (a critical finding).
+  dns_live_check: true
+  max_live_checks: 100
+  dns_axfr: true
 
 # -----------------------------------------------------------------------------
 # ANALYSIS — the rule engine that turns raw data into explained findings.

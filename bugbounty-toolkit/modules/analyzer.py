@@ -173,7 +173,12 @@ class Analyzer:
         self._rule_certificates(snapshot)
         self._rule_dangling_cnames(snapshot, domain)
         self._rule_email_authentication(snapshot)
+        self._rule_spf_policy(snapshot)
+        self._rule_dmarc(snapshot)
+        self._rule_axfr(snapshot)
         self._rule_sensitive_names(snapshot)
+        self._rule_live_sensitive_hosts(snapshot)
+        self._rule_js_intel(snapshot)
         self._rule_changes(changes)
 
         # A wide target can match the same rule on dozens of hosts. Keeping the
@@ -503,6 +508,138 @@ class Analyzer:
                 impact="Only meaningful if the host is reachable and in scope; treat it as a pointer for later, not a finding by itself.",
                 verify=f"dig {name} +short  and open it in a browser to see whether it is live",
                 recommendation="Confirm the host is intended to be public, and apply the same hardening as production if it is.",
+            )
+
+    def _rule_js_intel(self, snapshot: Mapping[str, Any]) -> None:
+        """Turn the JavaScript pass into explained findings."""
+        for entry in snapshot.get("js_intel", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            host = str(entry.get("host", ""))
+            host_url = f"https://{host}" if host and "://" not in host else host
+
+            for secret in entry.get("secrets", []) or []:
+                file_url = str(secret.get("file", ""))
+                self._add(
+                    title=f"Hard-coded {secret.get('type', 'credential')} in client JavaScript",
+                    category="secret in client code",
+                    host=host_url,
+                    severity=str(secret.get("severity", "Medium")),
+                    confidence="possible",
+                    evidence=f"{file_url} — pattern matched (masked): {secret.get('masked', '')}",
+                    what="A JavaScript file served by the host contains a string in the exact format of a live credential.",
+                    why="Client-side code ships to every visitor, so anything hard-coded in it is public regardless of who was meant to read it.",
+                    impact="If the value is real, it grants whatever the key can do — storage, email, cloud resources or an internal API — without authentication.",
+                    verify=f"curl -s {file_url} | grep -oE '<the matched pattern>'  then test the value against its own service before reporting",
+                    recommendation="Move the secret server-side or into a short-lived, least-privilege token, then rotate the exposed value immediately.",
+                )
+
+            for source_map in entry.get("source_maps", []) or []:
+                file_url = str(source_map.get("file", ""))
+                map_url = str(source_map.get("map", ""))
+                self._add(
+                    title="Source map exposed on a public JavaScript file",
+                    category="information disclosure",
+                    host=host_url,
+                    severity="Low",
+                    confidence="confirmed",
+                    evidence=f"{file_url} ships {map_url}",
+                    what="The production bundle declares a source map that is reachable, so the original pre-build source is downloadable.",
+                    why="Source maps often reveal internal paths, comments, feature flags and endpoints the bundle itself hides.",
+                    impact="Not a vulnerability by itself, but it hands an attacker the readable blueprint of the application for free.",
+                    verify=f"curl -sI {map_url}  (HTTP 200 means the map is reachable) and inspect its 'sources' list",
+                    recommendation="Remove source maps from production builds, or gate them behind authentication and internal networks only.",
+                )
+
+    def _rule_spf_policy(self, snapshot: Mapping[str, Any]) -> None:
+        """Report an SPF record that allows every sender on the internet."""
+        txt_records = [str(record).lower() for record in (snapshot.get("dns", {}) or {}).get("TXT", []) or []]
+        spf = [record for record in txt_records if record.startswith("v=spf1")]
+        if not spf or not any("+all" in record for record in spf):
+            return
+        domain = str(snapshot.get("target", ""))
+        self._add(
+            title="SPF record ends in +all, allowing any sender",
+            category="email authentication",
+            host=domain,
+            severity="Medium",
+            confidence="confirmed",
+            evidence="SPF includes the +all mechanism",
+            what="The published SPF policy explicitly authorises every server on the internet to send mail for the domain.",
+            why="A permissive all mechanism makes the rest of the record decorative: spoofed mail passes the policy anyway.",
+            impact="Phishing with the domain in the From header is indistinguishable from legitimate mail to receivers that check SPF.",
+            verify=f"dig TXT {domain} +short  and look for v=spf1 ... +all",
+            recommendation="Replace +all with -all (or ~all while testing) and list only the senders that really use the domain.",
+        )
+
+    def _rule_dmarc(self, snapshot: Mapping[str, Any]) -> None:
+        """Report a missing DMARC record."""
+        if str(snapshot.get("dmarc", "") or "").strip():
+            return
+        domain = str(snapshot.get("target", ""))
+        self._add(
+            title="No DMARC record published for the domain",
+            category="email authentication",
+            host=domain,
+            severity="Low",
+            confidence="likely",
+            evidence=f"TXT _dmarc.{domain} did not answer",
+            what="The domain publishes no policy on what receivers should do with failing mail.",
+            why="Without DMARC, SPF and DKIM results are only advisory: receivers have no instruction to reject spoofed mail.",
+            impact="Direct spoofing of the domain in phishing campaigns, with no reporting channel back to the owner.",
+            verify=f"dig TXT _dmarc.{domain} +short  (empty means it is absent)",
+            recommendation="Publish _dmarc with p=none and rua reporting first, then move to p=quarantine or p=reject once legitimate mail is aligned.",
+        )
+
+    def _rule_axfr(self, snapshot: Mapping[str, Any]) -> None:
+        """Report a nameserver that serves the whole zone to anyone."""
+        axfr = snapshot.get("axfr", {}) or {}
+        if not isinstance(axfr, dict) or not axfr.get("records"):
+            return
+        domain = str(snapshot.get("target", ""))
+        nameserver = str(axfr.get("ns", ""))
+        self._add(
+            title="Nameserver allows a full zone transfer (AXFR)",
+            category="dns misconfiguration",
+            host=domain,
+            severity="High",
+            confidence="confirmed",
+            evidence=f"AXFR against {nameserver} returned {len(axfr.get('records', []) or [])} record(s)",
+            what="The nameserver hands out the complete DNS zone, including every internal hostname it knows, to any requester.",
+            why="Zone transfer is meant for secondary nameservers only; public access exposes the entire naming plan.",
+            impact="An attacker receives a map of internal hosts, services and environments without touching any of them.",
+            verify=f"dig AXFR {domain} @{nameserver}  (a transfer that streams records confirms it)",
+            recommendation="Restrict transfers to the primary's approved secondaries ('allow-transfer {'secondary-ip'; };') on every nameserver.",
+        )
+
+    def _rule_live_sensitive_hosts(self, snapshot: Mapping[str, Any]) -> None:
+        """Upgrade sensitive-named subdomains that still resolve today."""
+        live = {str(name).lower() for name in snapshot.get("live_subdomains", []) or []}
+        if not live:
+            return
+        reported = 0
+        for name in snapshot.get("subdomains", []) or []:
+            name = str(name).lower()
+            if name not in live:
+                continue
+            label = name.split(".", 1)[0].lower()
+            if not any(hint in label for hint in self.sensitive_hints):
+                continue
+            reported += 1
+            if reported > 5:
+                break
+            self._add(
+                title="Sensitive-named host is live and reachable",
+                category="attack surface",
+                host=name,
+                severity="Medium",
+                confidence="confirmed",
+                evidence=f"{name} resolves in DNS today",
+                what="A hostname whose label suggests tooling or a non-production environment still answers.",
+                why="Staging, admin and CI hosts are usually reached only from inside the network, so their hardening drifts.",
+                impact="Only meaningful if the host is reachable and in scope, but a live admin or Jenkins host is where old software concentrates.",
+                verify=f"dig {name} +short  then open it in a browser and check the authentication it asks for",
+                recommendation="Take decommissioned hosts offline properly, and put every remaining internal tool behind SSO and IP allowlists.",
             )
 
     def _rule_changes(self, changes: Iterable[Mapping[str, Any]]) -> None:

@@ -174,14 +174,26 @@ class ReportGenerator:
     def _target_info(target: str, snapshot: Mapping[str, Any], metadata: Mapping[str, Any]) -> str:
         whois = snapshot.get("whois", {}) or {}
         dns = snapshot.get("dns", {}) or {}
+        sources = snapshot.get("sources", {}) or {}
+        js_entries = [entry for entry in snapshot.get("js_intel", []) or [] if isinstance(entry, dict)]
+        js_files = sum(int(entry.get("js_scanned") or 0) for entry in js_entries)
+        js_secrets = sum(len(entry.get("secrets", []) or []) for entry in js_entries)
+        js_maps = sum(len(entry.get("source_maps", []) or []) for entry in js_entries)
         lines = [
             "| Field | Value |",
             "| --- | --- |",
             f"| Apex domain | `{target}` |",
             f"| Subdomains found | {len(snapshot.get('subdomains', []) or [])} |",
+            f"| — from crt.sh | {sources.get('crtsh', 'n/a')} |",
+            f"| — from Cert Spotter | {sources.get('certspotter', 'n/a')} |",
+            f"| — from Wayback CDX | {sources.get('wayback', 'n/a')} |",
+            f"| — from OTX passive DNS | {sources.get('otx', 'n/a')} |",
+            f"| Archived URLs (Wayback + Common Crawl) | {len(snapshot.get('archived_urls', []) or [])} |",
             f"| Hosts probed over HTTP | {len(snapshot.get('hosts', []) or [])} |",
+            f"| Live subdomains (DNS) | {len(snapshot.get('live_subdomains', []) or [])} |",
+            f"| JavaScript scanned | {js_files} file(s), {js_secrets} secret(s), {js_maps} source map(s) |",
             f"| Registrar (RDAP) | {whois.get('registrar') or 'not reported'} |",
-            f"| Certificate records (crt.sh) | {len(snapshot.get('certificates', []) or [])} |",
+            f"| Certificate records (CT logs) | {len(snapshot.get('certificates', []) or [])} |",
             f"| DNS record types answered | {', '.join(sorted(dns)) or 'none'} |",
             f"| Run | {metadata.get('run_id', '')} |",
         ]

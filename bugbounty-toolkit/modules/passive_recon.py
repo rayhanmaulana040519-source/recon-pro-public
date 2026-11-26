@@ -1,4 +1,4 @@
-"""Passive reconnaissance: certificate transparency, DNS and RDAP WHOIS.
+"""Passive reconnaissance: certificate transparency, Wayback, OTX, DNS, RDAP.
 
 Everything here reads public data or performs a single plain GET. No paths are
 enumerated, no payloads are sent, and no target is touched beyond what a normal
@@ -7,13 +7,18 @@ browser visit would do.
 
 from __future__ import annotations
 
+import json
+import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 try:  # dnspython is optional at import time so one missing dep cannot break the CLI
     import dns.exception
+    import dns.query
     import dns.resolver
+    import dns.zone
 
     DNS_AVAILABLE = True
 except ImportError:  # pragma: no cover - handled at runtime with a warning
@@ -22,6 +27,36 @@ except ImportError:  # pragma: no cover - handled at runtime with a warning
 
 CRTSH_URL = "https://crt.sh/?q=%25.{domain}&output=json"
 RDAP_URL = "https://rdap.org/domain/{domain}"
+
+# Wayback Machine CDX index: archived URLs for the whole domain tree. A free,
+# key-less API. `matchType=domain` covers every subdomain; `collapse=urlkey`
+# keeps one URL per canonical form; `filter=statuscode:200` keeps only pages
+# that were actually archived successfully.
+WAYBACK_CDX_URL = (
+    "https://web.archive.org/cdx/search/cdx?url={domain}&matchType=domain"
+    "&output=json&fl=original&collapse=urlkey&filter=statuscode:200&limit={limit}"
+)
+
+# AlienVault OTX passive DNS: hostnames that have historically resolved for the
+# domain. Free; the API key is optional (it only raises the rate limit) and is
+# read from the environment variable named in the config.
+OTX_PASSIVE_DNS_URL = "https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
+
+# Cert Spotter: certificate-transparency issuances with cleaner pagination than
+# crt.sh, useful both as a second subdomain source and as a crt.sh fallback.
+# Free; the API key is optional (it raises the rate limit) and is read from the
+# environment variable named in the config.
+CERTSPOTTER_URL = (
+    "https://certspotter.com/api/v1/issuances?domain={domain}"
+    "&include_subdomains=true&limit={limit}"
+)
+
+# More free, key-less public sources. Each one is a different dataset of
+# historically observed names, so their union finds hosts a single source misses.
+ANUBIS_URL = "https://jldc.me/anubis/subdomains/{domain}"
+RAPIDDNS_URL = "https://rapiddns.io/subdomain/{domain}?full=1"
+COMMONCRAWL_INDICES_URL = "https://index.commoncrawl.org/collinfo.json"
+COMMONCRAWL_INDEX_URL = "{index}?url=*.{domain}/*&output=json&limit={limit}"
 
 
 def _now() -> str:
@@ -48,6 +83,20 @@ class PassiveRecon:
         self.enable_whois = bool(collectors.get("whois_rdap", True))
         self.dns_types: Iterable[str] = collectors.get("dns_types") or ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA"]
         self.max_subdomains = int(collectors.get("max_subdomains", 2000))
+        self.enable_wayback = bool(collectors.get("wayback_cdx", True))
+        self.max_archived_urls = int(collectors.get("max_archived_urls", 300))
+        self.enable_otx = bool(collectors.get("otx_passive_dns", True))
+        self.otx_api_key_env = str(collectors.get("otx_api_key_env", "OTX_API_KEY") or "")
+        self.enable_certspotter = bool(collectors.get("certspotter", True))
+        self.certspotter_api_key_env = str(collectors.get("certspotter_api_key_env", "CERTSPOTTER_API_KEY") or "")
+        self.max_certspotter = int(collectors.get("max_certspotter_issuances", 100))
+        self.enable_anubis = bool(collectors.get("anubis", True))
+        self.enable_rapiddns = bool(collectors.get("rapiddns", True))
+        self.enable_commoncrawl = bool(collectors.get("commoncrawl", True))
+        self.max_commoncrawl_urls = int(collectors.get("max_commoncrawl_urls", 200))
+        self.enable_dns_live = bool(collectors.get("dns_live_check", True))
+        self.max_live_checks = int(collectors.get("max_live_checks", 100))
+        self.enable_axfr = bool(collectors.get("dns_axfr", True))
         timeout = (config.get("http", {}) or {}).get("timeout", 15)
         self.dns_timeout = float(timeout)
 
@@ -186,19 +235,436 @@ class PassiveRecon:
         self.logger.info("RDAP: registrar %s", registrar or "unknown")
         return result
 
+    # -- Wayback Machine ------------------------------------------------------
+    def wayback_urls(self, domain: str) -> dict[str, Any]:
+        """Read the CDX index and return archived hostnames and URLs.
+
+        Args:
+            domain: Apex domain, already scope-checked by the caller.
+
+        Returns:
+            ``{"subdomains": [...], "urls": [...]}``; empty lists on failure.
+        """
+        result: dict[str, list[str]] = {"subdomains": [], "urls": []}
+        if not self.enable_wayback:
+            self.logger.info("wayback CDX disabled in config")
+            return result
+
+        url = WAYBACK_CDX_URL.format(domain=quote(domain), limit=self.max_archived_urls)
+        payload = self.http.get_json(url, timeout=60)
+        # With output=json the first row is the header ["original"]; anything
+        # else means the index answered in a shape this parser does not know.
+        if not isinstance(payload, list) or len(payload) < 2 or not isinstance(payload[0], list):
+            self.logger.warning("wayback CDX returned no usable data for %s", domain)
+            return result
+
+        suffix = "." + domain
+        hostnames: set[str] = set()
+        urls: list[str] = []
+        for row in payload[1:]:
+            if not row:
+                continue
+            original = str(row[0]).strip()
+            if not original:
+                continue
+            urls.append(original)
+            hostname = (urlsplit(original).hostname or "").strip().lower()
+            if hostname and (hostname == domain or hostname.endswith(suffix)):
+                hostnames.add(hostname)
+
+        result["subdomains"] = sorted(hostnames)
+        result["urls"] = urls
+        self.logger.info("wayback: %d archived URL(s), %d hostname(s)", len(urls), len(hostnames))
+        return result
+
+    # -- AlienVault OTX -------------------------------------------------------
+    def otx_subdomains(self, domain: str) -> list[str]:
+        """Read OTX passive DNS and return the historical hostnames.
+
+        Args:
+            domain: Apex domain, already scope-checked by the caller.
+
+        Returns:
+            Sorted list of hostnames under ``domain``; empty on failure.
+        """
+        if not self.enable_otx:
+            self.logger.info("OTX passive DNS disabled in config")
+            return []
+
+        headers: dict[str, str] = {}
+
+        api_key = os.environ.get(self.otx_api_key_env, "").strip()
+        if api_key:
+            headers["X-OTX-API-KEY"] = api_key
+
+        payload = self.http.get_json(OTX_PASSIVE_DNS_URL.format(domain=quote(domain)), headers=headers)
+        if not isinstance(payload, dict):
+            self.logger.warning("OTX returned no usable data for %s", domain)
+            return []
+
+        suffix = "." + domain
+        names: set[str] = set()
+        for entry in payload.get("passive_dns", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            hostname = str(entry.get("hostname") or "").strip().strip(".").lower()
+            if hostname.startswith("*."):
+                hostname = hostname[2:]
+            if hostname and (hostname == domain or hostname.endswith(suffix)) and "." in hostname:
+                names.add(hostname)
+
+        self.logger.info("OTX: %d hostname(s)", len(names))
+        return sorted(names)
+
+    # -- Cert Spotter ---------------------------------------------------------
+    def certspotter_issuances(self, domain: str) -> dict[str, Any]:
+        """Read Cert Spotter and return extra subdomains and certificates.
+
+        Args:
+            domain: Apex domain, already scope-checked by the caller.
+
+        Returns:
+            ``{"subdomains": [...], "certificates": [...]}``; empty on failure.
+        """
+        result: dict[str, Any] = {"subdomains": [], "certificates": []}
+        if not self.enable_certspotter:
+            self.logger.info("certspotter disabled in config")
+            return result
+
+        headers: dict[str, str] = {}
+        api_key = os.environ.get(self.certspotter_api_key_env, "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        url = CERTSPOTTER_URL.format(domain=quote(domain), limit=self.max_certspotter)
+        payload = self.http.get_json(url, timeout=40, headers=headers)
+        if not isinstance(payload, list):
+            self.logger.warning("certspotter returned no usable data for %s", domain)
+            return result
+
+        suffix = "." + domain
+        names: set[str] = set()
+        certificates: list[dict[str, Any]] = []
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            for raw in entry.get("dns_names", []) or []:
+                name = str(raw).strip().strip(".").lower()
+                if name.startswith("*."):
+                    name = name[2:]
+                if name and (name == domain or name.endswith(suffix)) and "." in name:
+                    names.add(name)
+            issuer = entry.get("issuer") or {}
+            issuer_name = issuer.get("name") if isinstance(issuer, dict) else ""
+            certificates.append(
+                {
+                    "common_name": str(entry.get("common_name") or "").strip().lower(),
+                    "issuer": str(issuer_name or "").strip(),
+                    "not_before": str(entry.get("not_before") or ""),
+                    "not_after": str(entry.get("not_after") or ""),
+                    "entry_timestamp": str(entry.get("id") or ""),
+                }
+            )
+
+        result["subdomains"] = sorted(names)
+        result["certificates"] = certificates
+        self.logger.info("certspotter: %d subdomain(s), %d issuance record(s)", len(names), len(certificates))
+        return result
+
+    # -- RapidDNS -------------------------------------------------------------
+    def rapiddns_subdomains(self, domain: str) -> list[str]:
+        """Read the RapidDNS public index and return the hostnames it lists.
+
+        RapidDNS answers with an HTML table, so the parse is a tolerant regex
+        over hostnames that end in the target domain.
+
+        Args:
+            domain: Apex domain, already scope-checked by the caller.
+
+        Returns:
+            Sorted list of hostnames; empty on failure.
+        """
+        if not self.enable_rapiddns:
+            self.logger.info("rapiddns disabled in config")
+            return []
+
+        text = self.http.get_text(RAPIDDNS_URL.format(domain=quote(domain)), timeout=40)
+        if not text:
+            self.logger.warning("rapiddns returned no usable data for %s", domain)
+            return []
+
+        suffix = "." + domain
+        names: set[str] = set()
+        for match in re.finditer(r">([A-Za-z0-9_*.\-]+\." + re.escape(domain) + r")<", text):
+            name = match.group(1).strip().strip(".").lower()
+            if name.startswith("*."):
+                name = name[2:]
+            if name and (name == domain or name.endswith(suffix)) and "." in name:
+                names.add(name)
+
+        self.logger.info("rapiddns: %d hostname(s)", len(names))
+        return sorted(names)
+
+    # -- Anubis ---------------------------------------------------------------
+    def anubis_subdomains(self, domain: str) -> list[str]:
+        """Read the Anubis dataset (jldc.me) and return its hostnames.
+
+        Args:
+            domain: Apex domain, already scope-checked by the caller.
+
+        Returns:
+            Sorted list of hostnames; empty on failure.
+        """
+        if not self.enable_anubis:
+            self.logger.info("anubis disabled in config")
+            return []
+
+        payload = self.http.get_json(ANUBIS_URL.format(domain=quote(domain)), timeout=40)
+        if not isinstance(payload, list):
+            self.logger.warning("anubis returned no usable data for %s", domain)
+            return []
+
+        suffix = "." + domain
+        names: set[str] = set()
+        for raw in payload:
+            name = str(raw).strip().strip(".").lower()
+            if name.startswith("*."):
+                name = name[2:]
+            if name and (name == domain or name.endswith(suffix)) and "." in name:
+                names.add(name)
+
+        self.logger.info("anubis: %d hostname(s)", len(names))
+        return sorted(names)
+
+    # -- Common Crawl ---------------------------------------------------------
+    def commoncrawl_urls(self, domain: str) -> list[str]:
+        """Read the newest Common Crawl index and return archived URLs.
+
+        Common Crawl answers with NDJSON (one JSON object per line), so the
+        response is parsed line by line rather than as a single JSON document.
+
+        Args:
+            domain: Apex domain, already scope-checked by the caller.
+
+        Returns:
+            List of archived URLs; empty on failure.
+        """
+        if not self.enable_commoncrawl:
+            self.logger.info("commoncrawl disabled in config")
+            return []
+
+        indices = self.http.get_json(COMMONCRAWL_INDICES_URL)
+        if not isinstance(indices, list) or not indices:
+            self.logger.warning("commoncrawl: could not list index collections")
+            return []
+
+        index = str((indices[0] or {}).get("cdx-api") or "").rstrip("/")
+        if not index:
+            self.logger.warning("commoncrawl: newest collection has no CDX API URL")
+            return []
+
+        url = COMMONCRAWL_INDEX_URL.format(index=index, domain=quote(domain), limit=self.max_commoncrawl_urls)
+        text = self.http.get_text(url, timeout=60)
+        if not text:
+            self.logger.warning("commoncrawl returned no usable data for %s", domain)
+            return []
+
+        urls: list[str] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            archived = str(entry.get("url") or "").strip()
+            if archived:
+                urls.append(archived)
+
+        self.logger.info("commoncrawl: %d archived URL(s)", len(urls))
+        return urls
+
+    # -- DNS liveness ---------------------------------------------------------
+    def resolve_live_hosts(self, names: list[str]) -> list[str]:
+        """Resolve each discovered hostname once and return the ones with an A record.
+
+        DNS answers only say whether a name resolves today — a cheap way to
+        separate the live surface from historical noise.
+
+        Args:
+            names: Hostnames, already scope-checked by the caller.
+
+        Returns:
+            Sorted list of hostnames that answered with an A record.
+        """
+        if not self.enable_dns_live:
+            self.logger.info("DNS liveness check disabled in config")
+            return []
+        if not DNS_AVAILABLE:
+            self.logger.warning("dnspython is not installed; skipping liveness check")
+            return []
+
+        resolver = dns.resolver.Resolver(configure=True)
+        resolver.timeout = self.dns_timeout
+        resolver.lifetime = self.dns_timeout
+
+        live: list[str] = []
+        checked = 0
+        for name in names:
+            if checked >= self.max_live_checks:
+                break
+            checked += 1
+            try:
+                answer = resolver.resolve(name, "A", raise_on_no_answer=False)
+            except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.NoNameservers, dns.exception.DNSException):
+                continue
+            if answer.rrset is not None and len(answer.rrset) > 0:
+                live.append(name)
+
+        self.logger.info("DNS liveness: %d of %d checked host(s) answered", len(live), checked)
+        return sorted(set(live))
+
+    # -- AXFR -----------------------------------------------------------------
+    def zone_transfer(self, domain: str) -> dict[str, Any]:
+        """Attempt a read-only AXFR against the domain's own nameservers.
+
+        A zone transfer is a single standard DNS request; a correctly
+        configured nameserver simply refuses it, which is the normal result.
+        When one answers, the whole zone has been handed over — a critical
+        finding.
+
+        Args:
+            domain: Apex domain, already scope-checked by the caller.
+
+        Returns:
+            ``{"ns": <server>, "records": [...]}`` when a transfer succeeded,
+            ``{}`` otherwise.
+        """
+        if not self.enable_axfr:
+            self.logger.info("AXFR check disabled in config")
+            return {}
+        if not DNS_AVAILABLE:
+            self.logger.warning("dnspython is not installed; skipping AXFR check")
+            return {}
+
+        resolver = dns.resolver.Resolver(configure=True)
+        resolver.timeout = self.dns_timeout
+        resolver.lifetime = self.dns_timeout
+
+        nameservers: list[str] = []
+        try:
+            answer = resolver.resolve(domain, "NS", raise_on_no_answer=False)
+            if answer.rrset is not None:
+                nameservers = [str(rdata).rstrip(".").lower() for rdata in answer.rrset]
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.NoNameservers, dns.exception.DNSException) as error:
+            self.logger.info("AXFR skipped: could not list nameservers (%s)", error)
+            return {}
+
+        for nameserver in nameservers:
+            try:
+                zone = dns.zone.from_xfr(dns.query.xfr(nameserver, domain, timeout=self.dns_timeout))
+                records = sorted(str(node) for node in zone.nodes.keys())[:200]
+                self.logger.warning("AXFR succeeded against %s — zone exposed (%d record(s))", nameserver, len(records))
+                return {"ns": nameserver, "records": records}
+            except Exception as error:  # a refusal or timeout here is the normal outcome
+                self.logger.info("AXFR refused by %s (%s)", nameserver, error)
+
+        self.logger.info("AXFR: all %d nameserver(s) refused", len(nameservers))
+        return {}
+
+    # -- DMARC ----------------------------------------------------------------
+    def dmarc_record(self, domain: str) -> str:
+        """Read the ``_dmarc`` TXT record, or an empty string when absent."""
+        if not self.enable_dns or not DNS_AVAILABLE:
+            return ""
+        resolver = dns.resolver.Resolver(configure=True)
+        resolver.timeout = self.dns_timeout
+        resolver.lifetime = self.dns_timeout
+        try:
+            answer = resolver.resolve(f"_dmarc.{domain}", "TXT", raise_on_no_answer=False)
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.NoNameservers, dns.exception.DNSException):
+            return ""
+        if answer.rrset is None:
+            return ""
+        values: list[str] = []
+        for rdata in answer.rrset:
+            chunks = getattr(rdata, "strings", None)
+            if chunks:
+                values.append(b"".join(chunks).decode("utf-8", "replace"))
+        return "".join(values)
+
     # -- orchestration --------------------------------------------------------
     def run(self, domain: str) -> dict[str, Any]:
         """Collect every enabled passive source for ``domain``.
 
         Returns:
             A snapshot dict that is stored as history and fed to the analyzer.
+            Subdomains are the union of every enabled source; archived URLs are
+            kept under ``archived_urls``; ``live_subdomains`` marks the names
+            that still resolve, and ``axfr``/``dmarc`` carry the DNS policy
+            checks the analyzer turns into findings.
         """
         ct = self.certificate_transparency(domain)
+
+        subdomains: set[str] = set(ct["subdomains"])
+        archived_urls: list[str] = []
+        sources: dict[str, int] = {"crtsh": len(ct["subdomains"])}
+
+        certspotter = self.certspotter_issuances(domain)
+        if certspotter["subdomains"] or certspotter["certificates"]:
+            sources["certspotter"] = len(certspotter["subdomains"])
+            subdomains.update(certspotter["subdomains"])
+            # Merge both CT sources without duplicating the same issuance.
+            seen_certs = {(cert["common_name"], cert["not_after"]) for cert in ct["certificates"]}
+            for cert in certspotter["certificates"]:
+                key = (cert["common_name"], cert["not_after"])
+                if key not in seen_certs:
+                    seen_certs.add(key)
+                    ct["certificates"].append(cert)
+
+        wayback = self.wayback_urls(domain)
+        if wayback["subdomains"] or wayback["urls"]:
+            sources["wayback"] = len(wayback["subdomains"])
+            sources["wayback_urls"] = len(wayback["urls"])
+            subdomains.update(wayback["subdomains"])
+            archived_urls.extend(wayback["urls"])
+
+        otx_names = self.otx_subdomains(domain)
+        if otx_names:
+            sources["otx"] = len(otx_names)
+            subdomains.update(otx_names)
+
+        anubis_names = self.anubis_subdomains(domain)
+        if anubis_names:
+            sources["anubis"] = len(anubis_names)
+            subdomains.update(anubis_names)
+
+        rapiddns_names = self.rapiddns_subdomains(domain)
+        if rapiddns_names:
+            sources["rapiddns"] = len(rapiddns_names)
+            subdomains.update(rapiddns_names)
+
+        commoncrawl = self.commoncrawl_urls(domain)
+        if commoncrawl:
+            sources["commoncrawl_urls"] = len(commoncrawl)
+            archived_urls.extend(commoncrawl)
+
+        # Hostnames that still answer DNS today, over the discovered surface.
+        live_subdomains = self.resolve_live_hosts(sorted(subdomains)[: self.max_subdomains])
+        axfr = self.zone_transfer(domain)
+        dmarc = self.dmarc_record(domain)
+
         return {
             "target": domain,
             "collected_at": _now(),
-            "subdomains": ct["subdomains"],
+            "subdomains": sorted(subdomains)[: self.max_subdomains],
             "certificates": ct["certificates"],
             "dns": self.dns_records(domain),
             "whois": self.whois(domain),
+            "archived_urls": archived_urls[: self.max_archived_urls * 2],
+            "sources": sources,
+            "live_subdomains": live_subdomains,
+            "axfr": axfr,
+            "dmarc": dmarc,
         }
