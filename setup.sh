@@ -1244,6 +1244,7 @@ write_config() {
         printf 'WORDLIST|%s\n' "$wordlist"
         printf 'PARAM_WORDLIST|%s\n' "$param_wordlist"
         printf 'X8_MAX_URLS|40\n'
+        printf 'ARCHIVE_MAX_URLS|150\n'
         printf 'DALFOX_MAX_URLS|150\n'
         printf 'FUZZ_MAX_HOSTS|3\n'
         printf 'NMAP_MAX_HOSTS|10\n'

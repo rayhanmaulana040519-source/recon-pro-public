@@ -79,6 +79,7 @@ WEB_PORTS=""
 WORDLIST="/usr/share/wordlists/dirb/common.txt"
 PARAM_WORDLIST="/usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt"
 X8_MAX_URLS=40
+ARCHIVE_MAX_URLS=150
 DALFOX_MAX_URLS=150
 FUZZ_MAX_HOSTS=3
 NMAP_MAX_HOSTS=10
@@ -509,21 +510,21 @@ apply_profile() {
         ''|normal) return 0 ;;
         fast)
             THREADS=40; RATE_LIMIT=100; STAGE_TIMEOUT=600
-            X8_MAX_URLS=20; DALFOX_MAX_URLS=50; FUZZ_MAX_HOSTS=2; NMAP_MAX_HOSTS=5
+            X8_MAX_URLS=20; ARCHIVE_MAX_URLS=50; DALFOX_MAX_URLS=50; FUZZ_MAX_HOSTS=2; NMAP_MAX_HOSTS=5
             CORS_MAX_URLS=20; EXPOSURE_MAX_HOSTS=5; JS_MAX_FILES=20
             GRAPHQL_MAX_HOSTS=5; OPENREDIR_MAX_URLS=20; TAKEOVER_MAX_HOSTS=50
             NUCLEI_AUTOCALIBRATE=0
             ;;
         deep)
             THREADS=40; RATE_LIMIT=80; STAGE_TIMEOUT=3600
-            X8_MAX_URLS=80; DALFOX_MAX_URLS=300; FUZZ_MAX_HOSTS=10; NMAP_MAX_HOSTS=25
+            X8_MAX_URLS=80; ARCHIVE_MAX_URLS=300; DALFOX_MAX_URLS=300; FUZZ_MAX_HOSTS=10; NMAP_MAX_HOSTS=25
             CORS_MAX_URLS=120; EXPOSURE_MAX_HOSTS=25; JS_MAX_FILES=100
             GRAPHQL_MAX_HOSTS=25; OPENREDIR_MAX_URLS=100; TAKEOVER_MAX_HOSTS=500
             NUCLEI_AUTOCALIBRATE=1
             ;;
         max)
             THREADS=80; RATE_LIMIT=150; STAGE_TIMEOUT=7200
-            X8_MAX_URLS=150; DALFOX_MAX_URLS=600; FUZZ_MAX_HOSTS=25; NMAP_MAX_HOSTS=50
+            X8_MAX_URLS=150; ARCHIVE_MAX_URLS=500; DALFOX_MAX_URLS=600; FUZZ_MAX_HOSTS=25; NMAP_MAX_HOSTS=50
             CORS_MAX_URLS=250; EXPOSURE_MAX_HOSTS=50; JS_MAX_FILES=250
             GRAPHQL_MAX_HOSTS=50; OPENREDIR_MAX_URLS=250; TAKEOVER_MAX_HOSTS=1000
             NUCLEI_AUTOCALIBRATE=1
@@ -787,6 +788,9 @@ load_config() {
             X8_MAX_URLS)
                 is_uint_between "${value:-}" 1 5000 && X8_MAX_URLS=$((10#$value)) || true
                 ;;
+            ARCHIVE_MAX_URLS)
+                is_uint_between "${value:-}" 1 5000 && ARCHIVE_MAX_URLS=$((10#$value)) || true
+                ;;
             DALFOX_MAX_URLS)
                 is_uint_between "${value:-}" 1 10000 && DALFOX_MAX_URLS=$((10#$value)) || true
                 ;;
@@ -897,6 +901,7 @@ save_config() {
         printf 'WORDLIST|%s\n' "$WORDLIST"
         printf 'PARAM_WORDLIST|%s\n' "$PARAM_WORDLIST"
         printf 'X8_MAX_URLS|%s\n' "$X8_MAX_URLS"
+        printf 'ARCHIVE_MAX_URLS|%s\n' "$ARCHIVE_MAX_URLS"
         printf 'DALFOX_MAX_URLS|%s\n' "$DALFOX_MAX_URLS"
         printf 'FUZZ_MAX_HOSTS|%s\n' "$FUZZ_MAX_HOSTS"
         printf 'NMAP_MAX_HOSTS|%s\n' "$NMAP_MAX_HOSTS"
@@ -1906,6 +1911,21 @@ module_san_hosts() {
     stage_status "san-hosts" "ok" "$(count_lines "$extra") hosts / ${live_count} live URLs"
 }
 
+# Historical URLs from the newest passive toolkit snapshot (Wayback + Common
+# Crawl). Archives still list endpoints that today's crawl no longer shows, and
+# a good share of them still answer. Prints one URL per line, capped by
+# ARCHIVE_MAX_URLS; prints nothing when no snapshot exists for the domain.
+toolkit_archived_urls() {
+    local domain="$1"
+    local dir="${SCRIPT_DIR}/bugbounty-toolkit/data/history/${domain}"
+    [[ -d "$dir" ]] || return 1
+    local snapshot
+    snapshot=$(ls -1t "$dir"/*.json 2>/dev/null | head -n 1)
+    [[ -n "$snapshot" ]] || return 1
+    jq -r '.archived_urls // [] | .[]' "$snapshot" 2>/dev/null \
+        | head -n "${ARCHIVE_MAX_URLS:-150}" || true
+}
+
 module_urls() {
     log INFO "Collecting URLs"
     local raw="$OUTPUT_DIR/urls/all.raw.tmp"
@@ -1916,11 +1936,7 @@ module_urls() {
     : > "$OUTPUT_DIR/urls/params.txt"
 
     if ! check_tool waybackurls && ! check_tool gau && ! check_tool katana; then
-        log WARN "No URL collector (waybackurls, gau, katana) installed; nothing to harvest."
-        : > "$out"
-        rm -f -- "$raw"
-        stage_status "urls" "skipped" "no URL collector installed"
-        return 0
+        log WARN "No URL collector (waybackurls, gau, katana) installed; only archived URLs will be used."
     fi
 
     # waybackurls and gau have no proxy flag; they honour the standard
@@ -1962,6 +1978,21 @@ module_urls() {
         cat "$OUTPUT_DIR/urls/from_tls.txt" >> "$out"
         sort -u -o "$out" "$out"
     fi
+
+    # Archived endpoints from the passive toolkit extend the pool the parameter
+    # stage feeds on; they pass the same scope rules as everything else, so an
+    # archive URL cannot widen the target list.
+    local arch_raw="${OUTPUT_DIR}/urls/archived.raw.tmp"
+    local arch_scoped="${OUTPUT_DIR}/urls/archived.txt"
+    if toolkit_archived_urls "$DOMAIN" >"$arch_raw" && [[ -s "$arch_raw" ]]; then
+        scope_filter url "$arch_raw" "$arch_scoped"
+        if [[ -s "$arch_scoped" ]]; then
+            cat "$arch_scoped" >> "$out"
+            sort -u -o "$out" "$out"
+            log OK "Archived URLs from the passive toolkit: $(count_lines "$arch_scoped")"
+        fi
+    fi
+    rm -f -- "$arch_raw"
 
     build_param_candidates
 
