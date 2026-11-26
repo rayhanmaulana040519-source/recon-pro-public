@@ -18,6 +18,7 @@ import re
 import secrets
 import shutil
 import signal
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -1520,7 +1521,13 @@ def main() -> int:
         if not os.environ.get("RECON_WEB_ALLOWED_HOSTS", "").strip():
             print("ERROR: set RECON_WEB_ALLOWED_HOSTS untuk bind non-local.", file=sys.stderr)
             return 2
-        print("PERINGATAN: gunakan hanya di balik TLS reverse proxy dan firewall; server ini tidak menyediakan TLS.", file=sys.stderr)
+        print("PERINGATAN: bind non-local tanpa TLS hanya aman di balik reverse proxy; atur RECON_WEB_TLS_CERT dan RECON_WEB_TLS_KEY untuk HTTPS langsung.", file=sys.stderr)
+    tls_cert = os.path.expanduser(os.environ.get("RECON_WEB_TLS_CERT", "").strip())
+    tls_key = os.path.expanduser(os.environ.get("RECON_WEB_TLS_KEY", "").strip())
+    use_tls = bool(tls_cert and tls_key)
+    if use_tls and not (Path(tls_cert).is_file() and Path(tls_key).is_file()):
+        print("ERROR: RECON_WEB_TLS_CERT/KEY diisi tetapi file-nya tidak ada.", file=sys.stderr)
+        return 2
     if not (ROOT / "recon.sh").is_file():
         print("ERROR: recon.sh tidak ditemukan di {}.".format(ROOT), file=sys.stderr)
         return 2
@@ -1530,7 +1537,14 @@ def main() -> int:
         print("ERROR: tidak dapat membuka {}:{}: {}".format(HOST, port, error), file=sys.stderr)
         return 2
     server.daemon_threads = True
-    print("Recon Pro dashboard berjalan di http://{}:{}".format(HOST, port))
+    if use_tls:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(tls_cert, tls_key)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        print("Recon Pro dashboard berjalan di https://{}:{}".format(HOST, port))
+    else:
+        print("Recon Pro dashboard berjalan di http://{}:{}".format(HOST, port))
     print("Hentikan dengan Ctrl-C. Scan hanya berjalan pada mesin ini.")
     if SHELL_ENABLED:
         print("PERINGATAN: terminal web aktif; akses shell hanya lewat loopback dan token dashboard.")

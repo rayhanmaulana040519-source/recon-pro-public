@@ -81,6 +81,8 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --fix-tools           pasang tool yang belum ada (arsenal + Python)
   bash recon.sh --clean [folder]      lihat file sampah (arsip unduhan, output lama)
   bash recon.sh --clean --apply       hapus file sampah yang terdaftar tadi
+  bash recon.sh --disk                apa yang benar-benar memenuhi disk
+  bash recon.sh --ssl [host]          buat sertifikat TLS untuk dashboard (HTTPS)
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
 
@@ -367,6 +369,42 @@ tool_version() {
     printf 'terpasang'
 }
 
+# ------------------------------------------------------------- disk usage ---
+# Shows what is really using the disk. It never deletes anything; the hints at
+# the end are the usual safe reclaims.
+show_disk() {
+    if ! command -v df >/dev/null 2>&1; then
+        fail "df tidak tersedia."
+        return 1
+    fi
+
+    printf '%bDisk filesystem (root):%b\n' "${BOLD}${CYAN}" "$NC"
+    df -h / 2>/dev/null | sed -n '1,2p'
+
+    printf '\n%bFolder terbesar (bisa butuh beberapa detik):%b\n' "${BOLD}${CYAN}" "$NC"
+    local d size
+    for d in /var /var/log /var/lib/docker /var/cache/apt /opt /root /home /tmp /usr "${RECON_HOME}"; do
+        [[ -d "$d" ]] || continue
+        size=$(timeout 20 du -sh "$d" 2>/dev/null | cut -f1)
+        [[ -n "$size" ]] && printf '  %-8s %s\n' "$size" "$d"
+    done | sort -h -r
+
+    printf '\n%bFile > 200 MB:%b\n' "${BOLD}${CYAN}" "$NC"
+    timeout 25 find /var /opt /root /home /usr /tmp -xdev -type f -size +200M -print0 2>/dev/null \
+        | while IFS= read -r -d '' f; do
+            printf '  %-8s %s\n' "$(du -h "$f" 2>/dev/null | cut -f1)" "$f"
+        done | sort -h -r | head -n 15
+
+    printf '\n%bSaran (aman, tidak otomatis):%b\n' "${BOLD}${CYAN}" "$NC"
+    printf '  apt-get clean                    # cache paket apt\n'
+    printf '  journalctl --vacuum-time=7d      # journal systemd\n'
+    if command -v docker >/dev/null 2>&1; then
+        printf '  docker system prune -af          # image/container tak dipakai\n'
+    fi
+    printf '  bash recon.sh --clean --apply    # arsip unduhan dan output lama\n'
+    return 0
+}
+
 # ------------------------------------------------------------------ cleanup ---
 # Lists the files that are clearly leftovers — downloaded tool archives, old
 # nmap output, interrupted-tool state — one directory deep, never recursing and
@@ -428,6 +466,48 @@ show_clean() {
     done
     ok "Selesai."
     return 0
+}
+
+# -------------------------------------------------------------------- TLS ----
+# Makes a certificate the dashboard can use. A self-signed one is enough for
+# direct access by IP; a real domain should get a real certificate (Cloudflare
+# Tunnel or certbot), otherwise every browser will warn.
+run_ssl() {
+    local host="${1:-}" dir="${RECON_HOME%/}/state/tls" port ip san
+    mkdir -p "$dir" 2>/dev/null || true
+    if ! command -v openssl >/dev/null 2>&1; then
+        fail "openssl tidak terpasang."
+        return 1
+    fi
+    [[ -n "$host" ]] || host="localhost"
+    port="${RECON_WEB_PORT:-8765}"
+
+    ip=$(curl -fsS --max-time 5 https://ifconfig.me/ip 2>/dev/null || true)
+    san="DNS:${host}"
+    [[ -n "$ip" ]] && san="${san},IP:${ip}"
+
+    info "Membuat sertifikat TLS self-signed untuk ${host}${ip:+, $ip} ..."
+    if openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout "${dir}/key.pem" \
+        -out "${dir}/cert.pem" \
+        -days 825 -subj "/CN=${host}" \
+        -addext "subjectAltName=${san}" >>"$LOG_FILE" 2>&1 \
+        || openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout "${dir}/key.pem" \
+        -out "${dir}/cert.pem" \
+        -days 825 -subj "/CN=${host}" >>"$LOG_FILE" 2>&1; then
+        chmod 600 "${dir}/key.pem" 2>/dev/null || true
+        ok "Sertifikat siap: ${dir}/cert.pem"
+        printf '  Buka   : https://<ip-vps>:%s\n' "$port"
+        printf '  Catatan: self-signed, browser akan memperingatkan sekali.\n'
+        printf '  Tanpa peringatan: pakai domain + Cloudflare Tunnel (lihat vps_mcp/README.md),\n'
+        printf '  atau certbot: sudo apt-get install -y certbot && sudo certbot certonly --standalone -d <domain>\n'
+        printf '  lalu salin fullchain.pem ke %s/cert.pem dan privkey.pem ke %s/key.pem\n' "$dir" "$dir"
+        printf '  Restart dashboard supaya TLS dipakai: bash recon.sh --web\n'
+        return 0
+    fi
+    fail "Gagal membuat sertifikat (lihat ${LOG_FILE})."
+    return 1
 }
 
 show_tools() {
@@ -998,6 +1078,7 @@ NO_SETUP=0
 NO_PASSIVE=0
 CLEAN_APPLY=0
 CLEAN_DIR="${HOME:-/root}"
+HOST_NAME=""
 PROFILE=""
 
 while (( $# )); do
@@ -1015,6 +1096,14 @@ while (( $# )); do
             fi
             ;;
         --apply)      CLEAN_APPLY=1 ;;
+        --disk|--storage) ACTION="disk" ;;
+        --ssl|--tls)
+            ACTION="ssl"
+            if [[ -n "${2:-}" && "${2:-}" != -* ]]; then
+                HOST_NAME="$2"
+                shift
+            fi
+            ;;
         --passive)    ACTION="passive" ;;
         --no-passive) NO_PASSIVE=1 ;;
         --fast)       PROFILE="fast" ;;
@@ -1090,6 +1179,14 @@ case "$ACTION" in
         ;;
     clean)
         show_clean "$CLEAN_DIR" "$CLEAN_APPLY"
+        exit $?
+        ;;
+    disk)
+        show_disk
+        exit $?
+        ;;
+    ssl)
+        run_ssl "$HOST_NAME"
         exit $?
         ;;
     web)

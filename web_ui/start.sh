@@ -47,9 +47,22 @@ fi
 export RECON_PRO_HOME="$RECON_HOME"
 export RECON_WEB_TOKEN="$TOKEN"
 PORT="${RECON_WEB_PORT:-8765}"
+
+# Certificates made by `recon.sh --ssl` are picked up automatically.
+TLS_DIR="${STATE_DIR}/tls"
+if [[ -z "${RECON_WEB_TLS_CERT:-}" && -f "${TLS_DIR}/cert.pem" && -f "${TLS_DIR}/key.pem" ]]; then
+    export RECON_WEB_TLS_CERT="${TLS_DIR}/cert.pem"
+    export RECON_WEB_TLS_KEY="${TLS_DIR}/key.pem"
+fi
+SCHEME="http"
+[[ -n "${RECON_WEB_TLS_CERT:-}" ]] && SCHEME="https"
+
 printf '\nRecon Pro dashboard siap dijalankan.\n'
-printf 'Buka  : http://127.0.0.1:%s\n' "$PORT"
+printf 'Buka  : %s://127.0.0.1:%s\n' "$SCHEME" "$PORT"
 printf 'Token : %s\n' "$TOKEN"
 printf 'Data  : %s\n' "$RECON_HOME"
+if [[ "$SCHEME" == "https" ]]; then
+    printf 'TLS   : sertifikat %s (self-signed akan memunculkan peringatan browser)\n' "$RECON_WEB_TLS_CERT"
+fi
 printf 'Hentikan server dengan Ctrl-C. Jangan bagikan token ini.\n\n'
 exec "$PYTHON_BIN" "${PROJECT_DIR}/web_ui/server.py"

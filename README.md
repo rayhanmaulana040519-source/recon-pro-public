@@ -48,6 +48,8 @@ bash recon.sh --setup                 # pasang/rapikan semua kebutuhan
 bash recon.sh --fix-tools             # lengkapi tool yang belum ada (arsenal + Python)
 bash recon.sh --clean                 # daftar file sampah (arsip unduhan, output lama)
 bash recon.sh --clean --apply         # hapus daftar itu, dengan konfirmasi
+bash recon.sh --disk                  # lihat apa yang memenuhi penyimpanan
+bash recon.sh --ssl example.com       # sertifikat TLS untuk dashboard (HTTPS)
 bash recon.sh --no-setup example.com  # jangan pasang apa pun, langsung scan
 bash recon.sh                         # menu interaktif (scan bertahap, settings, proxy)
 ```
