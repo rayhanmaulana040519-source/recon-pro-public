@@ -11,7 +11,8 @@
 #   bash recon.sh --log [domain]      log scan, ringkasan stage, error
 #   bash recon.sh --tools             tool + toolkit Python yang terpasang
 #   bash recon.sh --web               jalankan dashboard lokal (token dibuat otomatis)
-#   bash recon.sh --setup             pasang/rapikan semua kebutuhan
+#   bash recon.sh --setup [opsi]      pasang/rapikan semua kebutuhan
+#   bash recon.sh --fix-tools         lengkapi tool yang belum ada (arsenal + Python)
 #   bash recon.sh                     menu interaktif
 #
 # Hanya untuk domain yang tercantum in-scope di program bug bounty.
@@ -76,7 +77,8 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --update              git pull + cek sintaks + saran restart bot
   bash recon.sh --status              ringkasan: target, tool, proxy, bot, laporan
   bash recon.sh --install-service     pasang bot sebagai service systemd (root)
-  bash recon.sh --setup               pasang semua kebutuhan
+  bash recon.sh --setup [opsi]        pasang semua kebutuhan (opsi diteruskan ke setup.sh)
+  bash recon.sh --fix-tools           pasang tool yang belum ada (arsenal + Python)
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
 
@@ -140,6 +142,15 @@ toolkit_python() {
 
 toolkit_ready() {
     [[ -x "$TOOLKIT_DIR/.venv/bin/python" && -f "$TOOLKIT_DIR/main.py" ]]
+}
+
+# The venv can exist while its packages are missing (an earlier pip step may
+# have failed), and then every DNS stage silently degrades. Check the imports
+# where the toolkit actually runs, not on the system interpreter.
+toolkit_deps_ready() {
+    local py
+    py=$(toolkit_python) || return 1
+    "$py" -c 'import requests, yaml, dns.resolver' >/dev/null 2>&1
 }
 
 passive_report_path() {
@@ -374,7 +385,8 @@ show_tools() {
 
     printf '\nTerpasang: %s · Missing: %s\n' "$found" "$missing"
     if (( missing > 0 )); then
-        printf 'Lengkapi dengan: bash setup.sh   (atau bash setup.sh --minimal untuk tool inti)\n'
+        printf 'Lengkapi semuanya : bash recon.sh --fix-tools\n'
+        printf 'Tool inti saja    : bash setup.sh --minimal\n'
     fi
 
     printf '\n%bToolkit pasif (Python):%b\n' "$BOLD" "$NC"
@@ -382,6 +394,11 @@ show_tools() {
         printf '  %-16s %-11s %s\n' "bugbounty-toolkit" "missing" "folder tidak ditemukan"
     elif toolkit_ready && py=$(toolkit_python); then
         printf '  %-16s %-11s %s\n' "toolkit venv" "ok" "$("$py" -V 2>&1)"
+        if toolkit_deps_ready; then
+            printf '  %-16s %-11s %s\n' "dependensi" "ok" "requests · PyYAML · dnspython"
+        else
+            printf '  %-16s %-11s %s\n' "dependensi" "missing" "bash setup.sh --python-only"
+        fi
         printf '  %-16s %-11s %s\n' "config" "ok" "${TOOLKIT_DIR}/config/config.yaml"
     else
         printf '  %-16s %-11s %s\n' "toolkit venv" "missing" "bash setup.sh --python-only"
@@ -732,7 +749,7 @@ show_failures() {
     (( shown == 0 )) && printf '_tidak ada stderr dari tool mana pun_\n'
 
     printf '\nLog lengkap : bash recon.sh --log %s\n' "$domain"
-    printf 'Pasang yang kurang: bash setup.sh   (atau bash setup.sh --minimal)\n'
+    printf 'Pasang yang kurang: bash recon.sh --fix-tools\n'
     return 0
 }
 
@@ -921,6 +938,7 @@ while (( $# )); do
         -h|--help)    usage; exit 0 ;;
         -y|--yes)     ASSUME=1 ;;
         --setup)      ACTION="setup" ;;
+        --fix-tools|--install-missing) ACTION="fixtools" ;;
         --passive)    ACTION="passive" ;;
         --no-passive) NO_PASSIVE=1 ;;
         --fast)       PROFILE="fast" ;;
@@ -985,7 +1003,10 @@ done
 
 case "$ACTION" in
     setup)
-        exec "$BASH_BIN" "$SCRIPT_DIR/setup.sh"
+        exec "$BASH_BIN" "$SCRIPT_DIR/setup.sh" "$@"
+        ;;
+    fixtools)
+        exec "$BASH_BIN" "$SCRIPT_DIR/setup.sh" --with-arsenal
         ;;
     tools)
         show_tools
@@ -1078,7 +1099,7 @@ maybe_setup() {
     for tool in curl jq subfinder dnsx httpx nuclei; do
         command -v "$tool" >/dev/null 2>&1 || missing=1
     done
-    toolkit_ready || py_missing=1
+    toolkit_deps_ready || py_missing=1
     (( missing || py_missing )) || return 0
 
     if (( NO_SETUP )); then
@@ -1110,7 +1131,7 @@ if [[ "$ACTION" == "passive" ]]; then
         fail "Toolkit pasif tidak ditemukan di ${TOOLKIT_DIR}."
         exit 1
     fi
-    if ! toolkit_ready && (( ! NO_SETUP )); then
+    if ! toolkit_deps_ready && (( ! NO_SETUP )); then
         info "Menyiapkan toolkit Python (setup.sh --python-only) ..."
         "$BASH_BIN" "$SCRIPT_DIR/setup.sh" --python-only || warn "Penyiapan toolkit melaporkan masalah."
     fi

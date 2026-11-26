@@ -422,8 +422,13 @@ install_skipfish() {
         install_apt_package git || true
         install_apt_package build-essential || true
     fi
+    # Header names differ across releases: libidn11-dev on older Debian/Ubuntu,
+    # libidn12-dev or the virtual libidn-dev on newer ones, and pcre may only be
+    # available as the libpcre3-dev compatibility build. A name that does not
+    # exist is skipped silently, so trying all of them is cheap.
     local pkg
-    for pkg in libssl-dev zlib1g-dev libidn11-dev libidn-dev libpcre3-dev; do
+    for pkg in pkg-config libssl-dev zlib1g-dev \
+               libpcre3-dev libpcre-dev libidn11-dev libidn12-dev libidn-dev; do
         install_apt_package "$pkg" || true
     done
     if ! have git || ! have make; then
@@ -451,7 +456,11 @@ install_skipfish() {
         fi
     fi
     warn "skipfish gagal dikompilasi; ringkasan:"
-    tail -n 6 "$build_log" 2>/dev/null | while IFS= read -r line; do printf '    %s\n' "$line"; done
+    if grep -qi 'error:' "$build_log" 2>/dev/null; then
+        grep -i 'error:' "$build_log" 2>/dev/null | head -n 4 | while IFS= read -r line; do printf '    %s\n' "$line"; done
+    else
+        tail -n 6 "$build_log" 2>/dev/null | while IFS= read -r line; do printf '    %s\n' "$line"; done
+    fi
     printf '    Log build: %s\n' "$build_log"
     return 0
 }
@@ -565,6 +574,18 @@ install_wpscan() {
     for dep in build-essential pkg-config libcurl4-openssl-dev libxml2-dev libxslt1-dev zlib1g-dev libsqlite3-dev libffi-dev libyaml-dev; do
         install_apt_package "$dep" || true
     done
+    # nokogiri ships a pre-compiled gem per platform; installing it first keeps
+    # a 1-2 GB VPS from being killed while it compiles its C extensions.
+    local nokogiri_platform=""
+    case "$(uname -m)" in
+        x86_64|amd64) nokogiri_platform="x86_64-linux" ;;
+        aarch64|arm64) nokogiri_platform="arm64-linux" ;;
+    esac
+    if [[ -n "$nokogiri_platform" ]]; then
+        info "Memasang nokogiri pre-compiled (tanpa kompilasi) ..."
+        run_root gem install --no-document --platform "$nokogiri_platform" nokogiri >>"$gem_log" 2>&1 \
+            || warn "nokogiri pre-compiled tidak tersedia; gem wpscan akan mencoba kompilasi sendiri"
+    fi
     info "Memasang wpscan lewat gem (Ruby, bisa beberapa menit) ..."
     if run_root gem install --no-document wpscan >"$gem_log" 2>&1 && have wpscan; then
         ok "wpscan"

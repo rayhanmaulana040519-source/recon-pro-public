@@ -10,6 +10,7 @@ with the dashboard account's privileges and is not an interactive TTY.
 
 from __future__ import annotations
 
+import importlib.util
 import ipaddress
 import json
 import os
@@ -39,6 +40,7 @@ RUNS_DIR = RECON_HOME / "runs"
 REPORTS_DIR = RECON_HOME / "reports"
 TOOLKIT_REPORTS_DIR = ROOT / "bugbounty-toolkit" / "reports"
 TOOLKIT_HISTORY_DIR = ROOT / "bugbounty-toolkit" / "data" / "history"
+TOOLKIT_VENV = ROOT / "bugbounty-toolkit" / ".venv"
 TOKEN = os.environ.get("RECON_WEB_TOKEN", "")
 HOST = os.environ.get("RECON_WEB_HOST", "127.0.0.1").strip()
 PORT_RAW = os.environ.get("RECON_WEB_PORT", "8765")
@@ -380,6 +382,49 @@ def _which(name: str) -> str | None:
     return None
 
 
+def _toolkit_python() -> str:
+    """The interpreter the passive toolkit really runs on, or "" when absent."""
+    candidate = TOOLKIT_VENV / "bin" / "python"
+    try:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    except OSError:
+        return ""
+    return ""
+
+
+def _toolkit_module_states(modules: tuple[str, ...]) -> dict[str, bool]:
+    """Check toolkit packages inside its venv, not in the dashboard's interpreter.
+
+    The dashboard usually runs on the system Python while the toolkit runs in
+    its own venv, so looking them up here reported every package as missing
+    even when the toolkit had them.
+    """
+    interpreter = _toolkit_python()
+    if interpreter:
+        checker = (
+            "import importlib.util,sys;"
+            "print(','.join(m for m in sys.argv[1:] if importlib.util.find_spec(m)))"
+        )
+        try:
+            done = subprocess.run(
+                [interpreter, "-c", checker, *modules],
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+            if done.returncode == 0:
+                found = {part.strip() for part in (done.stdout or "").split(",") if part.strip()}
+                return {module: module in found for module in modules}
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    states: dict[str, bool] = {}
+    for module in modules:
+        try:
+            states[module] = importlib.util.find_spec(module) is not None
+        except (ImportError, ValueError):
+            states[module] = False
+    return states
+
+
 def _tool_inventory() -> list[dict[str, Any]]:
     tools = [
         ("curl", "HTTP client"), ("jq", "JSON utilities"), ("python3", "Passive toolkit / dashboard"),
@@ -399,12 +444,11 @@ def _tool_inventory() -> list[dict[str, Any]]:
         ("naabu", "Port discovery"), ("nmap", "Port inventory"),
     ]
     result = [{"name": name, "group": group, "installed": _which(name) is not None} for name, group in tools]
-    for module, label in (("yaml", "PyYAML"), ("requests", "Requests"), ("dns", "dnspython")):
-        try:
-            installed = __import__("importlib.util", fromlist=["find_spec"]).find_spec(module) is not None
-        except (ImportError, ValueError):
-            installed = False
-        result.append({"name": label, "group": "Passive toolkit", "installed": installed})
+    modules = {"yaml": "PyYAML", "requests": "Requests", "dns": "dnspython"}
+    states = _toolkit_module_states(tuple(modules))
+    result.append({"name": "toolkit venv", "group": "Passive toolkit", "installed": bool(_toolkit_python())})
+    for module, label in modules.items():
+        result.append({"name": label, "group": "Passive toolkit", "installed": states.get(module, False)})
     return result
 
 
@@ -415,7 +459,7 @@ ARSENAL_CATALOG: tuple[dict[str, str], ...] = (
     {
         "id": "skipfish", "bin": "skipfish", "name": "Skipfish", "category": "crawl",
         "summary": "Crawler aktif 2.10b dengan dictionary bawaan: memetakan direktori, file, dan form.",
-        "install": "git clone https://github.com/spinkham/skipfish /opt/skipfish && make -C /opt/skipfish && sudo ln -sf /opt/skipfish/skipfish /usr/local/bin/skipfish",
+        "install": "bash recon.sh --fix-tools   # apt, lalu build dari sumber dengan header pcre/idn/ssl",
         "usage": "touch /tmp/skipfish-new.wl && skipfish -o /tmp/skipfish-{{TARGET}} -S /usr/local/share/skipfish/dictionaries/complete.wl -W /tmp/skipfish-new.wl -l 20 -r 2000 https://{{TARGET}}/",
     },
     {

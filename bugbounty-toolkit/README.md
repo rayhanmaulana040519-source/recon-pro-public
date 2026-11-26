@@ -73,6 +73,7 @@ and installs the dependencies for you:
 ```bash
 cd ..
 bash setup.sh --python-only      # venv + requests, PyYAML, dnspython
+bash recon.sh --fix-tools        # semua tool yang belum ada (arsenal + Python)
 bash recon.sh --passive example.com
 ```
 
