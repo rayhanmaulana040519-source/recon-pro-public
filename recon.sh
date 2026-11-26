@@ -83,6 +83,7 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --web-stop            hentikan dashboard yang jalan
   bash recon.sh --web-token           tampilkan URL + token dashboard
   bash recon.sh --web-install-service dashboard jadi service systemd (hidup setelah reboot)
+  bash recon.sh --web-diag            diagnosa "tidak dapat dijangkau"
   bash recon.sh --telegram            atur token, chat ID & user bot, lalu tes
   bash recon.sh --notify-test         kirim ulang pesan tes ke Telegram
   bash recon.sh --stop-bot            hentikan bot yang sedang jalan
@@ -683,6 +684,59 @@ web_restart() {
     fi
     web_stop
     web_start
+}
+
+# Prints everything needed to explain "the dashboard is unreachable": the
+# process, the port, systemd, a local HTTP/HTTPS probe, the firewall and the
+# tail of the log. Paste the output and the cause is usually obvious.
+web_diag() {
+    local port="${RECON_WEB_PORT:-8765}" scheme s
+    scheme=$(web_scheme)
+    printf '=== WEB DIAG ===\n'
+    printf 'Port   : %s\n' "$port"
+    printf 'Bind   : %s (loopback = hanya lewat SSH tunnel)\n' "${RECON_WEB_HOST:-127.0.0.1}"
+    printf 'Scheme : %s\n' "$scheme"
+
+    printf '\n-- proses --\n'
+    pgrep -af 'web_ui/server.py' 2>/dev/null || printf '(tidak ada proses)\n'
+
+    printf '\n-- systemd --\n'
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl is-active recon-pro-web.service 2>/dev/null || printf 'tidak aktif\n'
+    else
+        printf '(systemd tidak ada)\n'
+    fi
+
+    printf '\n-- port --\n'
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltnp 2>/dev/null | grep -E ":${port}\b" || printf '(tidak ada yang listen di port %s)\n' "$port"
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -ltnp 2>/dev/null | grep -E ":${port}\b" || printf '(tidak ada yang listen di port %s)\n' "$port"
+    else
+        printf '(ss/netstat tidak ada)\n'
+    fi
+
+    printf '\n-- curl localhost --\n'
+    for s in http https; do
+        printf '%s: ' "$s"
+        curl -k -s -o /dev/null -w '%{http_code}\n' --max-time 4 "${s}://127.0.0.1:${port}/" 2>/dev/null || printf 'gagal\n'
+    done
+
+    printf '\n-- firewall --\n'
+    if command -v ufw >/dev/null 2>&1; then
+        ufw status 2>/dev/null | head -n 6 || true
+    else
+        printf '(ufw tidak ada)\n'
+    fi
+
+    printf '\n-- log terakhir --\n'
+    tail -n 15 "${STATE_DIR}/web.log" 2>/dev/null || printf '(belum ada log)\n'
+
+    printf '\nCatatan: dashboard sengaja bind ke 127.0.0.1. Membuka http://<ip-vps>:%s\n' "$port"
+    printf 'dari HP tidak akan pernah berhasil; pakai SSH tunnel:\n'
+    printf '  ssh -N -L %s:127.0.0.1:%s root@<ip-vps>\n' "$port" "$port"
+    printf 'lalu buka http://127.0.0.1:%s di browser.\n' "$port"
+    return 0
 }
 
 # Installs the dashboard as a systemd service so it survives logout, crashes
@@ -1532,6 +1586,7 @@ while (( $# )); do
         --web-stop)   ACTION="webstop" ;;
         --web-token)  ACTION="webtoken" ;;
         --web-install-service) ACTION="webservice" ;;
+        --web-diag|--web-debug) ACTION="webdiag" ;;
         --telegram)   ACTION="telegram" ;;
         --notify-test) ACTION="notify" ;;
         --stop-bot)   ACTION="stopbot" ;;
@@ -1639,6 +1694,10 @@ case "$ACTION" in
         ;;
     webservice)
         web_install_service
+        exit $?
+        ;;
+    webdiag)
+        web_diag
         exit $?
         ;;
     report)
