@@ -8,12 +8,14 @@
 # dump + search + tap + dump again. These commands do all of that on the device
 # and return one short answer: "text<TAB>x,y<TAB>clickable", one line per node.
 #
+# The device must be unlocked: a locked screen dumps an empty hierarchy.
+#
 #   dump [limit]              compact screen dump (default 80 lines)
 #   tap <text> [limit]        find text, tap it, return the new screen
 #   tapxy <x> <y>             tap exact coordinates
 #   swipe <x1> <y1> <x2> <y2> [ms]
 #   type <text>               type into the focused field
-#   key back|home|recents|enter
+#   key back|home|recents|enter|wake
 #   open <package>            launch an app
 #   wait <ms>
 #   shot [path]               full screenshot (default /sdcard/phone/shot.png)
@@ -31,7 +33,7 @@ dump_xml() {
 }
 
 compact() {
-    tr '\n' ' ' < "$DUMP" | sed 's/<node /\n<node /g' | awk '
+    tr "\n" " " < "$DUMP" | sed "s/<node /\n<node /g" | awk '
     {
         line = $0
         text = ""
@@ -82,9 +84,7 @@ case "$cmd" in
             compact | head -n 30
             exit 1
         fi
-        x=${xy%,*}
-        y=${xy#*,}
-        input tap "$x" "$y"
+        input tap "${xy%,*}" "${xy#*,}"
         sleep 0.4
         if dump_xml; then
             compact | head -n "$limit"
@@ -97,7 +97,7 @@ case "$cmd" in
         input swipe "${1:?x1}" "${2:?y1}" "${3:?x2}" "${4:?y2}" "${5:-300}"
         ;;
     type)
-        input text "$(printf '%s' "${1:-}" | sed 's/ /%s/g')"
+        input text "$(printf "%s" "${1:-}" | sed "s/ /%s/g")"
         ;;
     key)
         case "${1:-}" in
@@ -105,7 +105,8 @@ case "$cmd" in
             home) input keyevent 3 ;;
             recents) input keyevent 187 ;;
             enter) input keyevent 66 ;;
-            *) echo "pemakaian: key back|home|recents|enter"; exit 2 ;;
+            wake) input keyevent 224 ;;
+            *) echo "pemakaian: key back|home|recents|enter|wake"; exit 2 ;;
         esac
         ;;
     open)
@@ -119,7 +120,7 @@ case "$cmd" in
         screencap -p "$out" && echo "$out"
         ;;
     win)
-        dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp' | head -n 2
+        dumpsys window 2>/dev/null | grep -E "mCurrentFocus|mFocusedApp" | head -n 2
         ;;
     *)
         echo "phone.sh: dump|tap|tapxy|swipe|type|key|open|wait|shot|win"

@@ -37,6 +37,8 @@ the network cost, which is the part the VPS cannot avoid.
 
 ## Limits
 
+- The device must be **unlocked**. A locked screen (keyguard) dumps an empty
+  hierarchy, so `dump` and `tap` return nothing until `deviceLocked=0`.
 - Runs as the `shell` user (`adb shell`), so it needs no root and no extra app.
 - Text matching is exact first, then case-insensitive contains; the first match
   is used, so pass distinctive text.
