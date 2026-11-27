@@ -24,6 +24,7 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
+from modules.ai_triage import summarize_findings
 from modules.analyzer import Analyzer
 from modules.history_manager import HistoryManager
 from modules.js_intel import JsIntel
@@ -160,6 +161,7 @@ def run_target(
     logger: Any,
     dry_run: bool,
     checker: ScopeChecker | None = None,
+    request_ai_summary: bool = False,
 ) -> dict[str, Any]:
     """Run the whole pipeline for one target and return a result summary.
 
@@ -170,6 +172,7 @@ def run_target(
         logger: Logger for progress.
         dry_run: When true, stop after the scope decision.
         checker: Reuse an existing scope checker instead of building a new one.
+        request_ai_summary: Make one bounded AI request after analysis when true.
 
     Returns:
         ``{"target": str, "allowed": bool, "findings": [...], "reports": {...}}``.
@@ -205,6 +208,15 @@ def run_target(
         analyzer = Analyzer(config, logger)
         findings = analyzer.analyze(snapshot, changes)
 
+        ai_summary = ""
+        ai_provider = str((config.get("ai", {}) or {}).get("provider", "ollama"))
+        if request_ai_summary:
+            try:
+                ai_summary, ai_provider = summarize_findings(domain, findings, changes, config, logger)
+            except Exception as error:
+                ai_summary = f"AI triage unavailable: {error}"
+                logger.warning("AI triage failed: %s", error)
+
         metadata: dict[str, Any] = {
             "tool": f"{project.get('name', TOOL_NAME)} {project.get('version', '1.0.0')}",
             "author": project.get("author", ""),
@@ -231,6 +243,22 @@ def run_target(
 
         generator = ReportGenerator(config, logger)
         reports = generator.generate(domain, snapshot, findings, changes, checker.scope_summary(), metadata)
+        if request_ai_summary:
+            markdown_path = reports.get("markdown")
+            if markdown_path is not None:
+                ai_path = markdown_path.with_name(f"{markdown_path.stem}-ai.md")
+            else:
+                ai_path = generator.output_dir / f"{domain}-{metadata['run_id']}-ai.md"
+            quoted_summary = "\n".join("> " + line if line else ">" for line in ai_summary.splitlines())
+            ai_path.write_text(
+                f"# AI-assisted triage — {domain}\n\n"
+                f"Provider: {ai_provider}\n\n"
+                "> AI-generated assistance only; it does not confirm findings. Verify every item manually.\n\n"
+                f"{quoted_summary}\n",
+                encoding="utf-8",
+            )
+            reports["AI triage"] = ai_path
+            logger.info("AI triage report written: %s", ai_path)
 
         notifier = Notifier(config, logger)
         notifier.summary(domain, findings, changes, reports)
@@ -251,6 +279,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--list", action="store_true", help="list the in-scope domains and exit")
     parser.add_argument("--dry-run", action="store_true", help="check scope and show the plan without any request")
     parser.add_argument("--no-http", action="store_true", help="skip the per-host HTTP probe (pure DNS/CT/RDAP)")
+    parser.add_argument("--ai-summary", action="store_true", help="opt in to one bounded AI triage request for this report")
     parser.add_argument("-q", "--quiet", action="store_true", help="only warnings and errors on the console")
     return parser.parse_args(argv)
 
@@ -299,7 +328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info("starting %s with %d target(s)", TOOL_NAME, len(targets))
     exit_code = 0
     for target in targets:
-        result = run_target(target, config, config_path, logger, args.dry_run, checker)
+        result = run_target(target, config, config_path, logger, args.dry_run, checker, args.ai_summary)
         if not result["allowed"]:
             exit_code = 2  # at least one target was refused
 

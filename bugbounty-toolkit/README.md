@@ -190,3 +190,35 @@ A proxy hides your address from the target; it does not make you anonymous.
 * Do not add rules or collectors that fuzz, brute-force or send payloads. If you
   need that, it is a different tool with a different permission conversation.
 * Keep the report and the raw data private to the program you are working with.
+
+
+
+## AI triage (optional, explicitly invoked)
+
+AI triage is report-only: it has no scanner tools and cannot trigger scans or actions. It makes one bounded request per target only when `--ai-summary` is supplied, and writes a separate `*-ai.md` report. The prompt receives at most 10 findings and 10 changes, with raw evidence and verification commands omitted.
+
+Choose a provider in `config/config.yaml`:
+
+```yaml
+ai:
+  provider: "ollama"  # local; or "openai" for the paid API
+```
+
+For local Ollama, install Ollama on the same machine, pull the configured model (`ollama pull qwen2.5:3b`), and keep the API at its local default `http://127.0.0.1:11434/api/chat`. This integration rejects non-loopback Ollama URLs so report data remains on the scanner host. No Ollama runtime or model is downloaded by Recon Pro setup.
+
+For OpenAI, set `provider: "openai"` and save the key without displaying it:
+
+```bash
+bash recon.sh --api-key OPENAI_API_KEY
+```
+
+OpenAI API usage is billed separately from ChatGPT subscriptions. When selected, the target host and limited finding/change descriptions are sent to OpenAI; never enable it for reports you do not want to send to an external service. The API key stays in the mode-600 local state file and is never stored in this repository.
+
+Run the passive toolkit with AI only when intended:
+
+```bash
+bash recon.sh --passive example.com --ai-summary
+python3 bugbounty-toolkit/main.py --ai-summary example.com
+```
+
+The direct Python command reads `OPENAI_API_KEY` from its environment; the `recon.sh` wrapper loads the protected key file automatically. AI output is advisory and must not be treated as a confirmed finding.

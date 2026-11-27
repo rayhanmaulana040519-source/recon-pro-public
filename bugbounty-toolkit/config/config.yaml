@@ -242,3 +242,17 @@ logging:
 notify:
   console: true
   alerts_file: "reports/alerts.jsonl"
+
+
+# ----------------------------------------------------------------------------
+# OPTIONAL AI TRIAGE — only sends bounded report context when --ai-summary is used.
+# OpenAI is a paid external API; Ollama defaults to loopback and keeps data local.
+# ----------------------------------------------------------------------------
+ai:
+  provider: "ollama"           # "ollama" (local) or "openai" (paid API)
+  ollama_url: "http://127.0.0.1:11434/api/chat"
+  ollama_model: "qwen2.5:3b"
+  openai_model: "gpt-4o-mini"
+  timeout: 30
+  max_findings: 10
+  max_changes: 10

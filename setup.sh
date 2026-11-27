@@ -43,6 +43,7 @@ DO_PYTHON=1
 DO_WEB_AUDIT=0
 DO_ARSENAL=0
 DO_ARTEX=0
+DO_TESTSSL=1
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RED='\033[0;31m'; NC='\033[0m'
 
@@ -69,6 +70,7 @@ recon_pro setup — pasang semua yang dibutuhkan lalu cek hasilnya
   bash setup.sh --with-artex     klon ARTEX (platform AI pentest; Docker + PostgreSQL)
   bash setup.sh --no-python     lewati toolkit Python pasif
   bash setup.sh --python-only   hanya siapkan toolkit Python
+  bash setup.sh --no-testssl    jangan pasang pemeriksa TLS opsional
 
 Aman dijalankan berulang. Skrip ini tidak memindai apa pun.
 TXT
@@ -76,15 +78,17 @@ TXT
 
 while (( $# )); do
     case "$1" in
-        --minimal)     MINIMAL=1 ;;
+        --minimal)     MINIMAL=1; DO_TESTSSL=0 ;;
         --no-packages) DO_PACKAGES=0 ;;
         --no-go)       DO_GO=0 ;;
+        --no-testssl)  DO_TESTSSL=0 ;;
         --with-x8)     DO_X8=1 ;;
         --with-web-audit) DO_WEB_AUDIT=1 ;;
         --with-arsenal)   DO_ARSENAL=1 ;;
         --with-artex)     DO_ARTEX=1 ;;
         --arsenal-only)
             DO_ARSENAL=1
+            DO_TESTSSL=0
             DO_PACKAGES=0
             DO_GO=0
             DO_TEMPLATES=0
@@ -93,6 +97,7 @@ while (( $# )); do
             ;;
         --web-audit-only)
             DO_WEB_AUDIT=1
+            DO_TESTSSL=0
             DO_PACKAGES=0
             DO_GO=0
             DO_TEMPLATES=0
@@ -103,6 +108,7 @@ while (( $# )); do
         --no-python)   DO_PYTHON=0 ;;
         --python-only)
             DO_PYTHON=1
+            DO_TESTSSL=0
             DO_PACKAGES=0
             DO_GO=0
             DO_TEMPLATES=0
@@ -319,6 +325,22 @@ install_go_tools() {
             warn "$name gagal dipasang (detail: ${LOG_FILE})"
         fi
     done
+
+    # AlterX permutations add a bounded candidate-generation pass to the full
+    # pipeline. Pin the release: newer main may require a newer Go than this setup
+    # promises, while v0.0.6 supports the project's Go 1.21+ baseline.
+    if (( ! MINIMAL )); then
+        if have alterx; then
+            ok "alterx"
+        else
+            info "Memasang alterx v0.0.6 (pinned) ..."
+            if go install github.com/projectdiscovery/alterx/cmd/alterx@v0.0.6 >>"$LOG_FILE" 2>&1; then
+                ok "alterx v0.0.6"
+            else
+                warn "alterx gagal dipasang (detail: ${LOG_FILE})"
+            fi
+        fi
+    fi
 
     # Go installs into ~/go/bin, which only shows up in an interactive shell
     # that sourced .bashrc. Symlink into /usr/local/bin so systemd units, cron
@@ -897,7 +919,50 @@ install_artex() {
     return 0
 }
 
+install_testssl() {
+    if (( ! DO_TESTSSL )); then
+        info "Melewati testssl.sh (--no-testssl / --minimal)."
+        return 0
+    fi
+
+    local dir="/opt/testssl.sh" link="/usr/local/bin/testssl.sh"
+    if have testssl.sh; then
+        ok "testssl.sh"
+        return 0
+    fi
+    if [[ -e "$dir" && ! -d "${dir}/.git" ]]; then
+        warn "${dir} ada tetapi bukan checkout Git; tidak ditimpa."
+        return 0
+    fi
+    if ! have git; then
+        warn "git tidak tersedia; testssl.sh v3.2.5 dilewati."
+        return 0
+    fi
+    if [[ ! -d "$dir" ]]; then
+        info "Memasang testssl.sh v3.2.5 dari repositori resmi (TLS scan tetap opt-in) ..."
+        if ! run_root git clone --depth 1 --branch v3.2.5 https://github.com/testssl/testssl.sh.git "$dir" >>"$LOG_FILE" 2>&1; then
+            warn "testssl.sh gagal diunduh; lihat ${LOG_FILE}"
+            return 0
+        fi
+    fi
+    if [[ ! -x "${dir}/testssl.sh" ]]; then
+        warn "${dir}/testssl.sh tidak ditemukan atau tidak executable; tidak ditautkan."
+        return 0
+    fi
+    if [[ -e "$link" || -L "$link" ]]; then
+        warn "${link} sudah ada; tidak ditimpa."
+        return 0
+    fi
+    if run_root ln -s "${dir}/testssl.sh" "$link" >>"$LOG_FILE" 2>&1; then
+        ok "testssl.sh v3.2.5 siap; scan hanya berjalan dengan opsi --testssl."
+    else
+        warn "Symlink testssl.sh gagal dibuat; lihat ${LOG_FILE}"
+    fi
+    return 0
+}
+
 install_optional_extras() {
+    install_testssl
     install_web_audit_tools
     install_arsenal_tools
     install_artex
@@ -1306,7 +1371,7 @@ check_syntax() {
     done
 
     if have python3; then
-        for script in recon_pro_bot.py web_ui/server.py; do
+        for script in recon_pro_bot.py web_ui/server.py bugbounty-toolkit/main.py bugbounty-toolkit/openapi_routes.py bugbounty-toolkit/modules/ai_triage.py; do
             [[ -f "$SCRIPT_DIR/$script" ]] || continue
             if ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' \
                 "$SCRIPT_DIR/$script" 2>/tmp/.recon_syn; then

@@ -436,8 +436,8 @@ def _tool_inventory() -> list[dict[str, Any]]:
         ("curl", "HTTP client"), ("jq", "JSON utilities"), ("python3", "Passive toolkit / dashboard"),
         ("subfinder", "Subdomain discovery"), ("assetfinder", "Subdomain discovery"),
         ("amass", "Subdomain discovery"), ("findomain", "Subdomain discovery"),
-        ("chaos", "Subdomain discovery"), ("dnsx", "DNS validation"),
-        ("httpx", "HTTP probing"), ("tlsx", "TLS inventory"),
+        ("chaos", "Subdomain discovery"), ("alterx", "Subdomain permutations"), ("dnsx", "DNS validation"),
+        ("httpx", "HTTP probing"), ("tlsx", "TLS inventory"), ("testssl.sh", "Optional TLS protocol/cipher audit"),
         ("katana", "URL collection"), ("waybackurls", "URL collection"), ("gau", "URL collection"),
         ("gf", "Pattern filtering"), ("x8", "Parameter discovery"), ("arjun", "Parameter discovery"),
         ("ffuf", "Content discovery"), ("gobuster", "Content discovery"),
@@ -511,6 +511,12 @@ ARSENAL_CATALOG: tuple[dict[str, str], ...] = (
         "usage": "whatweb --aggression=1 --no-errors https://{{TARGET}}/",
     },
     {
+        "id": "testssl", "bin": "testssl.sh", "name": "testssl.sh", "category": "audit",
+        "summary": "Pemeriksaan TLS opsional dengan subset eksplisit; tidak memakai default vulnerability suite.",
+        "install": "bash setup.sh",
+        "usage": "testssl.sh -p -s -S --ip=one --nodns=min --connect-timeout 10 --openssl-timeout 20 --ids-friendly --disable-rating -q --color 0 --jsonfile /tmp/{{TARGET}}-testssl.json {{TARGET}}:443",
+    },
+    {
         "id": "wafw00f", "bin": "wafw00f", "name": "WAFW00F", "category": "audit",
         "summary": "Identifikasi WAF dan produk proteksi sebelum menguji lebih jauh.",
         "install": "pipx install wafw00f",
@@ -556,6 +562,12 @@ ARSENAL_CATALOG: tuple[dict[str, str], ...] = (
         "summary": "Enumerasi subdomain pasif dari banyak sumber publik.",
         "install": "go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
         "usage": "subfinder -d {{TARGET}} -all -silent",
+    },
+    {
+        "id": "alterx", "bin": "alterx", "name": "AlterX", "category": "recon",
+        "summary": "Menghasilkan permutasi subdomain dari temuan pasif; batasi jumlah kandidat dan validasi DNS sebelum pemindaian.",
+        "install": "go install github.com/projectdiscovery/alterx/cmd/alterx@v0.0.6",
+        "usage": "printf '%s\\n' '{{TARGET}}' > /tmp/alterx-input.txt && alterx -list /tmp/alterx-input.txt -silent -limit 2000",
     },
     {
         "id": "amass", "bin": "amass", "name": "Amass", "category": "recon",

@@ -39,6 +39,7 @@ bugbounty-toolkit/reports/*
 runs/
 reports/*/
 state/bot/
+state/api_keys.env
 
 # ---------------------------------------------------------------------------
 # OS noise

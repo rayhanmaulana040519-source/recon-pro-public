@@ -52,13 +52,22 @@ TOOLKIT_DIR="${SCRIPT_DIR}/bugbounty-toolkit"
 TOOLKIT_SCOPE="${TOOLKIT_DIR}/data/extra_scope.txt"
 PASSIVE_REPORT=""
 
-# API keys for the passive collectors live in one protected file, so cron and
-# the dashboard's subprocess see them without a shell profile. It is parsed,
-# never sourced: a stray line in a data file must not run commands.
+# API keys for passive collectors live in one protected file. Parse it rather
+# than sourcing it, so data cannot run shell commands. OpenAI is deliberately
+# kept out of the global environment and passed only to the opted-in toolkit.
 API_KEYS_FILE="${STATE_DIR}/api_keys.env"
+_openai_key_from_environment="${OPENAI_API_KEY:-}"
+unset OPENAI_API_KEY
+unset OPENAI_API_KEY_VALUE
+OPENAI_API_KEY_VALUE="$_openai_key_from_environment"
+unset _openai_key_from_environment
 if [[ -f "$API_KEYS_FILE" ]]; then
     while IFS='=' read -r _key _value; do
         [[ -z "${_key:-}" || "$_key" == \#* || ! "$_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && continue
+        if [[ "$_key" == "OPENAI_API_KEY" ]]; then
+            OPENAI_API_KEY_VALUE="$_value"
+            continue
+        fi
         export "$_key=$_value"
     done <"$API_KEYS_FILE" 2>/dev/null || true
 fi
@@ -110,7 +119,9 @@ recon — satu pintu untuk semuanya (scan aktif + toolkit pasif)
   bash recon.sh --disk                apa yang benar-benar memenuhi disk
   bash recon.sh --doctor              kesehatan sistem: update, tool, key, disk, dashboard HTTP
   bash recon.sh --no-ssl              hapus sisa sertifikat dan restart dashboard HTTP
-  bash recon.sh --api-key [NAMA]      simpan API key collector (default PDCP_API_KEY)
+  bash recon.sh --api-key [NAMA]      simpan API key (PDCP/OTX/Cert Spotter/OpenAI)
+  bash recon.sh --ai-summary          aktifkan triase AI untuk laporan pasif
+  bash recon.sh --testssl <domain>    aktifkan pemeriksaan TLS testssl.sh (maks 10 host)
   bash recon.sh --no-setup <domain>   lewati pemasangan otomatis
   bash recon.sh                       menu interaktif
 
@@ -187,7 +198,7 @@ toolkit_deps_ready() {
 
 passive_report_path() {
     local domain="$1" path
-    path=$(ls -1t "$TOOLKIT_DIR/reports/${domain}-"*.md 2>/dev/null | head -n 1)
+    path=$(ls -1t "$TOOLKIT_DIR/reports/${domain}-"*.md 2>/dev/null | grep -v -- '-ai[.]md$' | head -n 1)
     printf '%s' "${path:-}"
 }
 
@@ -209,8 +220,10 @@ ensure_toolkit_scope() {
 # run_passive <domain> — OSINT + header analysis; sets PASSIVE_REPORT
 run_passive() {
     local domain="$1" py
+    local -a args=("$domain")
 
     PASSIVE_REPORT=""
+    (( AI_SUMMARY )) && args+=(--ai-summary)
     if [[ ! -d "$TOOLKIT_DIR" ]]; then
         warn "Folder bugbounty-toolkit tidak ada; mode pasif dilewati."
         return 0
@@ -230,7 +243,11 @@ run_passive() {
     ensure_toolkit_scope "$domain"
 
     info "Mode pasif (CT logs, Wayback, Common Crawl, OTX, Anubis, RapidDNS, DNS, AXFR, TLS, robots) untuk ${domain} ..."
-    if ! ( cd -- "$TOOLKIT_DIR" && "$py" main.py "$domain" ); then
+    if (( AI_SUMMARY )); then
+        if ! ( cd -- "$TOOLKIT_DIR" && OPENAI_API_KEY="$OPENAI_API_KEY_VALUE" "$py" main.py "${args[@]}" ); then
+            warn "Toolkit pasif selesai dengan error; lihat ${TOOLKIT_DIR}/logs/toolkit.log"
+        fi
+    elif ! ( cd -- "$TOOLKIT_DIR" && "$py" main.py "${args[@]}" ); then
         warn "Toolkit pasif selesai dengan error; lihat ${TOOLKIT_DIR}/logs/toolkit.log"
     fi
 
@@ -378,7 +395,7 @@ show_timings() {
 }
 
 # ------------------------------------------------------------------- tools ----
-TOOL_CANDIDATES="curl jq subfinder assetfinder amass findomain chaos dnsx httpx tlsx nuclei dalfox whatweb katana waybackurls gau x8 ffuf gf naabu nmap python3 skipfish gobuster feroxbuster dirsearch wpscan commix arjun"
+TOOL_CANDIDATES="curl jq subfinder assetfinder amass findomain chaos alterx dnsx httpx tlsx testssl.sh nuclei dalfox whatweb katana waybackurls gau x8 ffuf gf naabu nmap python3 skipfish gobuster feroxbuster dirsearch wpscan commix arjun"
 
 tool_version() {
     local tool="$1" flag out
@@ -503,10 +520,10 @@ show_clean() {
 set_api_key() {
     local name="${1:-PDCP_API_KEY}" value tmp
     case "$name" in
-        PDCP_API_KEY|OTX_API_KEY|CERTSPOTTER_API_KEY) ;;
+        PDCP_API_KEY|OTX_API_KEY|CERTSPOTTER_API_KEY|OPENAI_API_KEY) ;;
         *)
             warn "Nama tidak dikenal: ${name}"
-            printf '  Yang dipakai toolkit: PDCP_API_KEY (Chaos), OTX_API_KEY, CERTSPOTTER_API_KEY\n'
+            printf '  Key yang didukung: PDCP_API_KEY, OTX_API_KEY, CERTSPOTTER_API_KEY, OPENAI_API_KEY\n'
             return 1
             ;;
     esac
@@ -524,7 +541,11 @@ set_api_key() {
     mv -f "$tmp" "$API_KEYS_FILE"
     chmod 600 "$API_KEYS_FILE" 2>/dev/null || true
     ok "${name} disimpan di ${API_KEYS_FILE} (mode 600)"
-    printf '  Dipakai oleh collector Chaos dan binary `chaos` (env var yang sama).\n'
+    if [[ "$name" == "OPENAI_API_KEY" ]]; then
+        printf '  Dipakai hanya saat toolkit pasif dijalankan dengan --ai-summary dan provider openai.\n'
+    else
+        printf '  Dipakai oleh collector terkait saat scan berjalan.\n'
+    fi
     printf '  Scan berikutnya langsung memakainya; tidak perlu restart apa pun.\n'
     return 0
 }
@@ -1266,13 +1287,17 @@ self_test() {
         fi
     done
 
-    if [[ -f "$SCRIPT_DIR/recon_pro_bot.py" ]] && command -v python3 >/dev/null 2>&1; then
-        if ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' \
-            "$SCRIPT_DIR/recon_pro_bot.py" 2>/tmp/.recon_syn; then
-            err=$(tail -n 2 /tmp/.recon_syn | tr '\n' ' ')
-            fail "recon_pro_bot.py: $err"
-            rc=1
-        fi
+    if command -v python3 >/dev/null 2>&1; then
+        for script in recon_pro_bot.py web_ui/server.py bugbounty-toolkit/main.py \
+            bugbounty-toolkit/openapi_routes.py bugbounty-toolkit/modules/ai_triage.py; do
+            [[ -f "$SCRIPT_DIR/$script" ]] || continue
+            if ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8").read())' \
+                "$SCRIPT_DIR/$script" 2>/tmp/.recon_syn; then
+                err=$(tail -n 2 /tmp/.recon_syn | tr '\n' ' ')
+                fail "$script: $err"
+                rc=1
+            fi
+        done
     fi
 
     rm -f /tmp/.recon_syn
@@ -1401,11 +1426,14 @@ show_doctor() {
     key_names=""
     keys_have=0
     local name
-    for name in PDCP_API_KEY OTX_API_KEY CERTSPOTTER_API_KEY; do
-        if declare -p "$name" >/dev/null 2>&1; then
-            keys_have=$((keys_have + 1))
-            key_names="${key_names} ${name}"
+    for name in PDCP_API_KEY OTX_API_KEY CERTSPOTTER_API_KEY OPENAI_API_KEY; do
+        if [[ "$name" == "OPENAI_API_KEY" ]]; then
+            [[ -n "$OPENAI_API_KEY_VALUE" ]] || continue
+        elif ! declare -p "$name" >/dev/null 2>&1; then
+            continue
         fi
+        keys_have=$((keys_have + 1))
+        key_names="${key_names} ${name}"
     done
     if (( keys_have > 0 )); then
         doctor_line "API key" "${keys_have} terpasang:${key_names}" ok
@@ -1564,6 +1592,8 @@ CLEAN_APPLY=0
 CLEAN_DIR="${HOME:-/root}"
 KEY_NAME="PDCP_API_KEY"
 PROFILE=""
+AI_SUMMARY=0
+TESTSSL=0
 
 while (( $# )); do
     case "$1" in
@@ -1596,6 +1626,8 @@ while (( $# )); do
             ;;
         --passive)    ACTION="passive" ;;
         --no-passive) NO_PASSIVE=1 ;;
+        --ai-summary) AI_SUMMARY=1 ;;
+        --testssl)    TESTSSL=1 ;;
         --fast)       PROFILE="fast" ;;
         --deep)       PROFILE="deep" ;;
         --max)        PROFILE="max" ;;
@@ -1803,6 +1835,7 @@ maybe_setup() {
     for tool in curl jq subfinder dnsx httpx nuclei; do
         command -v "$tool" >/dev/null 2>&1 || missing=1
     done
+    if (( TESTSSL )) && ! command -v testssl.sh >/dev/null 2>&1; then missing=1; fi
     toolkit_deps_ready || py_missing=1
     (( missing || py_missing )) || return 0
 
@@ -1886,7 +1919,11 @@ if [[ -n "$PROFILE" ]]; then
     export RECON_PRO_PROFILE="$PROFILE"
     info "Profil: ${PROFILE} (mengalahkan angka di ${CONFIG_FILE} untuk run ini)"
 fi
-"$BASH_BIN" "$SCRIPT_DIR/recon_pro.sh" --yes "$DOMAIN"
+if (( TESTSSL )); then
+    "$BASH_BIN" "$SCRIPT_DIR/recon_pro.sh" --yes --testssl "$DOMAIN"
+else
+    "$BASH_BIN" "$SCRIPT_DIR/recon_pro.sh" --yes "$DOMAIN"
+fi
 rc=$?
 
 if (( rc != 0 )); then

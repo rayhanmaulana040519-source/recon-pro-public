@@ -3,7 +3,8 @@
 Authorized bug-bounty recon pipeline for one apex domain: passive subdomain
 enumeration, DNS validation, HTTP probing, TLS inventory, URL and parameter
 collection, and confirmation stages (takeover, CORS, exposures, open redirect,
-GraphQL, JavaScript secrets) on top of nuclei, dalfox, x8, ffuf, naabu and nmap.
+GraphQL, OpenAPI routes, JavaScript source maps and secrets) on top of nuclei,
+dalfox, x8, ffuf, naabu and nmap.
 
 **Only test assets you are explicitly authorized to test.** The pipeline asks for
 an `AUTHORIZED` confirmation and only ever looks at the apex you give it, minus
@@ -20,7 +21,8 @@ bash recon.sh example.com     # scan aktif + toolkit pasif sekaligus
 `recon.sh example.com` menjalankan dua hal dalam satu perintah:
 
 1. **pipeline aktif** (`recon_pro.sh`) — subdomain, DNS, TLS, port, URL, nuclei,
-   dalfox, ffuf, takeover, CORS, exposures, GraphQL, JS secrets;
+   dalfox, ffuf, takeover, CORS, exposures, GraphQL, OpenAPI GET routes, JS
+   source maps and masked-secret checks;
 2. **toolkit pasif** (`bugbounty-toolkit/`) — CT logs (crt.sh + Cert Spotter),
    Wayback, Common Crawl, OTX, Anubis, RapidDNS, DNS, AXFR, DMARC/SPF, TLS,
    robots.txt, intel JavaScript, analisis header, diff antar run, dan laporan
@@ -260,12 +262,28 @@ off by default (`0` = keep every run).
   `confirmed` only when a second, independent signal proves it. The report leads
   with confirmed findings, ranked by score, and lists observations separately.
 - Passive collection merges subfinder, assetfinder, amass, findomain, chaos,
-  crt.sh, CertSpotter, HackerTarget, Anubis and the apex certificate's own SANs,
-  then DNS-validates the result before anything is probed.
+  crt.sh, CertSpotter, HackerTarget, Anubis and the apex certificate's own SANs.
+  Full setup also installs AlterX v0.0.6 (pinned); it generates at most 2,000
+  target-aware permutation candidates from those names. Every generated name is
+  scope-filtered again and goes through the same DNS/wildcard validation stage;
+  if `dnsx` is unavailable, the run marks that stage skipped and keeps those names
+  unvalidated. AlterX is optional and is not included in `setup.sh --minimal`.
 - Wildcard DNS is detected explicitly, and `dnsx -auto-wildcard` drops the names
   that only answer through the wildcard record.
 - Hosts named only by a certificate are probed and merged into the host and URL
   lists instead of being left out of URL collection, nuclei and dalfox.
+- OpenAPI/Swagger discovery makes at most twelve conventional GET requests per
+  host across ten live hosts, with each specification response capped at 2 MiB, then
+  adds at most 100 documented GET routes. YAML parsing uses the toolkit's existing
+  PyYAML dependency and skips YAML gracefully when it is unavailable; JSON remains
+  supported. Query parameters feed existing XSS/parameter checks, and the same
+  routes join nuclei; write methods and request-body examples are never replayed.
+- JavaScript analysis reads in-scope bundles capped at 1 MiB and at most ten
+  same-origin source maps capped at 2 MiB each; neither request follows redirects.
+  It scans embedded `sourcesContent` for
+  masked credential patterns and in-scope endpoint candidates, capped at 500;
+  those routes join parameter checks and nuclei. No source-map URL outside the
+  bundle's exact origin is fetched.
 - `httpx` runs with retries, and `nuclei` selects templates from the detected
   technology stack (`-as`) without the update check (`-duc`).
 - Security-header observations cover 2xx/3xx responses only: the header set of a
@@ -325,3 +343,11 @@ Alias `bash recon.sh --dashboard` dan launcher langsung `bash web_ui/start.sh` j
 - Tombol Run FreeMilk hanya menampilkan UI statis dan tidak dapat mengakses scanner lokal. Untuk pemindaian, buka alamat lokal VPS/Termux sesuai langkah di atas.
 
 Konfigurasi opsional: `RECON_PRO_HOME` memindahkan folder data yang sama dengan pipeline; `RECON_WEB_HOST` harus tetap loopback (`127.0.0.1` atau `localhost`), sedangkan `RECON_WEB_PORT` dan `BUGBOUNTY_SCOPE_FILE` dapat diatur sesuai lingkungan.
+
+
+
+## Optional TLS deep check and AI report triage
+
+Full `bash setup.sh` installs the official `testssl.sh` **v3.2.5** release; `bash setup.sh --minimal` skips it, and `--no-testssl` opts out. The TLS pass remains off by default. Enable it per authorized run with `bash recon.sh example.com --testssl` (or `bash recon_pro.sh --testssl example.com`). It tests at most 10 in-scope HTTPS endpoints sequentially, one resolved IP each, using only the explicit protocol, cipher-category, and server-default checks. It does not run testssl.sh's broad default vulnerability suite, HTTP header tests, client simulation, or external revocation lookups. TLS probes are active connections, so follow the program's rules.
+
+The passive toolkit also has optional AI report triage via `--ai-summary` (for example, `bash recon.sh --passive example.com --ai-summary`). It supports either local Ollama or the paid OpenAI API, selected in `bugbounty-toolkit/config/config.yaml`; no AI request is made unless the flag is supplied. Ollama is loopback-only and its runtime/model must be installed separately. OpenAI API charges are separate from ChatGPT subscriptions; the target and bounded finding descriptions leave the host when that provider is selected. Save the key using `bash recon.sh --api-key OPENAI_API_KEY`; it is kept in the protected local state directory, not the repository. See [the toolkit guide](bugbounty-toolkit/README.md) for setup and privacy details. AI output is advisory, never proof.

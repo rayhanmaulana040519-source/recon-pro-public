@@ -28,6 +28,7 @@ fi
 
 VERSION="4.0"
 AUTHOR="rey"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -127,6 +128,12 @@ CORS_MAX_URLS=50
 EXPOSURE_MAX_HOSTS=10
 JS_MAX_FILES=40
 GRAPHQL_MAX_HOSTS=10
+OPENAPI_MAX_HOSTS=10
+OPENAPI_MAX_ENDPOINTS=100
+JS_MAX_SOURCE_MAPS=10
+JS_MAX_ENDPOINTS=500
+MODULE_TESTSSL=0
+TESTSSL_MAX_HOSTS=10
 OPENREDIR_MAX_URLS=40
 TAKEOVER_MAX_HOSTS=200
 
@@ -1169,7 +1176,7 @@ module_tool_inventory() {
     local report="$OUTPUT_DIR/final/tool_inventory.txt"
     local tool
     : > "$report"
-    for tool in subfinder assetfinder amass findomain chaos dnsx httpx tlsx nuclei dalfox \
+    for tool in subfinder assetfinder amass findomain chaos alterx dnsx httpx tlsx testssl.sh nuclei dalfox \
         whatweb katana waybackurls gau x8 ffuf gf naabu nmap curl jq timeout; do
         if check_tool "$tool"; then
             printf 'AVAILABLE %s\n' "$tool" >> "$report"
@@ -1194,7 +1201,7 @@ check_required_tools() {
 check_env() {
     local tool
     local -a required=(curl jq)
-    local -a scanners=(subfinder assetfinder amass findomain chaos dnsx httpx tlsx nuclei \
+    local -a scanners=(subfinder assetfinder amass findomain chaos alterx dnsx httpx tlsx testssl.sh nuclei \
         dalfox whatweb katana waybackurls gau x8 ffuf gf naabu nmap)
     local -a absent=()
 
@@ -1257,6 +1264,7 @@ check_env() {
             'github.com/tomnomnom/assetfinder' \
             'github.com/lc/gau/v2/cmd/gau' \
             'github.com/hahwul/dalfox/v2'
+        printf '%b\n' "${YELLOW}AlterX is pinned for Go compatibility: go install github.com/projectdiscovery/alterx/cmd/alterx@v0.0.6${NC}"
         printf '%b\n' "${YELLOW}apt install nmap ffuf jq libpcap-dev; x8 is Rust: cargo install x8${NC}"
         printf '%b\n' "${YELLOW}gf (optional, improves parameter routing): github.com/tomnomnom/gf${NC}"
     else
@@ -1490,17 +1498,28 @@ detect_wildcard_dns() {
 }
 
 module_subdomains() {
-    log INFO "Passive subdomain enumeration + DNS validation"
+    log INFO "Passive subdomain enumeration + bounded permutation generation + DNS validation"
     local raw="$OUTPUT_DIR/subs/all.raw.tmp"
     local passive="$OUTPUT_DIR/subs/all.passive.txt"
+    local dns_candidates="$OUTPUT_DIR/subs/all.candidates.txt"
     local resolved="$OUTPUT_DIR/subs/dnsx_resolved.txt"
+    local dns_scoped="$OUTPUT_DIR/subs/dnsx_scoped.tmp"
     local out="$OUTPUT_DIR/subs/all.txt"
     local san_raw="$OUTPUT_DIR/subs/san.raw.tmp"
     local tlsx_target="$OUTPUT_DIR/subs/tlsx_target.tmp"
-    local dnsx_status=0 attempt
+    local alterx_raw="$OUTPUT_DIR/subs/alterx.raw.tmp"
+    local alterx_candidates="$OUTPUT_DIR/subs/alterx_candidates.txt"
+    local alterx_resolved="$OUTPUT_DIR/subs/alterx_resolved.txt"
+    local dnsx_status=0 alterx_rc=0 attempt
+    local alterx_status="skipped" alterx_note="alterx missing"
+    local alterx_generated=0 alterx_dns_resolved=0
     : > "$raw"
     : > "$resolved"
+    : > "$dns_scoped"
     : > "$san_raw"
+    : > "$alterx_raw"
+    : > "$alterx_candidates"
+    : > "$alterx_resolved"
     printf '%s\n' "$DOMAIN" >> "$raw"
 
     # An apex that does not answer an A lookup cannot be scanned; saying so at
@@ -1576,38 +1595,78 @@ module_subdomains() {
 
     scope_filter host "$raw" "$passive"
     rm -f -- "$raw"
+    stage_status "passive-subs" "ok" "$(count_lines "$passive") scoped passive names"
+
+    # AlterX is only a bounded name generator: every output is scope-filtered
+    # again and is sent through the same DNS/wildcard validation as other sources.
+    if check_tool alterx; then
+        if [[ -s "$passive" ]]; then
+            run_tool alterx --stdout "$alterx_raw" alterx -list "$passive" -silent -limit 2000
+            alterx_rc=$?
+            scope_filter host "$alterx_raw" "$alterx_candidates"
+            alterx_generated=$(count_lines "$alterx_candidates")
+            if (( alterx_rc == 0 )); then
+                alterx_status="ok"
+                alterx_note="${alterx_generated} scoped candidates (cap 2000)"
+            else
+                alterx_status="degraded"
+                alterx_note="${alterx_generated} scoped candidates; $(describe_status "$alterx_rc")"
+            fi
+        else
+            alterx_note="no passive names to permute"
+        fi
+    fi
+    stage_status "alterx" "$alterx_status" "$alterx_note"
+
+    { cat "$passive"; cat "$alterx_candidates"; } | sort -u > "$dns_candidates"
 
     if ! check_tool dnsx; then
-        cp -- "$passive" "$out"
-        log WARN "dnsx unavailable; passive names are not DNS-validated."
+        cp -- "$dns_candidates" "$out"
+        log WARN "dnsx unavailable; passive and permutation names are not DNS-validated."
         stage_status "dns" "skipped" "dnsx missing"
-    elif [[ ! -s "$passive" ]]; then
+    elif [[ ! -s "$dns_candidates" ]]; then
         : > "$out"
         log WARN "No in-scope names were found."
         stage_status "dns" "skipped" "no in-scope names"
     else
-        run_tool dnsx --stdout "$resolved" dnsx -list "$passive" -silent -auto-wildcard \
+        run_tool dnsx --stdout "$resolved" dnsx -list "$dns_candidates" -silent -auto-wildcard \
             -threads "$THREADS" -rate-limit "$RATE_LIMIT" -retry 2 -timeout 5s
         dnsx_status=$?
         if [[ ! -s "$resolved" ]] && (( dnsx_status != 0 )); then
             log WARN "dnsx failed ($(describe_status "$dnsx_status")); retrying without -auto-wildcard."
-            run_tool dnsx --stdout "$resolved" dnsx -list "$passive" -silent \
+            run_tool dnsx --stdout "$resolved" dnsx -list "$dns_candidates" -silent \
                 -threads "$THREADS" -rate-limit "$RATE_LIMIT" -retry 2 -timeout 5s
             dnsx_status=$?
         fi
         if [[ -s "$resolved" ]]; then
-            scope_filter host "$resolved" "$out"
-            stage_status "dns" "ok" "$(count_lines "$resolved") DNS-validated names"
+            scope_filter host "$resolved" "$dns_scoped"
+            cp -- "$dns_scoped" "$out"
+            stage_status "dns" "ok" "$(count_lines "$dns_scoped") DNS-validated names"
         else
             # A broken resolver must not wipe the host list and silently skip
             # every later stage, which used to look exactly like "no subdomains".
-            cp -- "$passive" "$out"
-            log WARN "dnsx produced no validated names ($(describe_status "$dnsx_status")); continuing with unvalidated passive names."
-            stage_status "dns" "degraded" "unvalidated passive names"
+            cp -- "$dns_candidates" "$out"
+            log WARN "dnsx produced no validated names ($(describe_status "$dnsx_status")); continuing with unvalidated candidates."
+            stage_status "dns" "degraded" "unvalidated passive and permutation names"
         fi
     fi
+
+    if [[ -s "$alterx_candidates" && -s "$dns_scoped" ]]; then
+        grep -Fxf "$alterx_candidates" "$dns_scoped" > "$alterx_resolved" || true
+    fi
+    alterx_dns_resolved=$(count_lines "$alterx_resolved")
+    if ! check_tool dnsx; then
+        stage_status "alterx-dns" "skipped" "${alterx_dns_resolved} DNS-validated AlterX candidates; dnsx missing"
+    elif [[ ! -s "$alterx_candidates" ]]; then
+        stage_status "alterx-dns" "skipped" "0 AlterX candidates to validate"
+    elif [[ -s "$resolved" ]]; then
+        stage_status "alterx-dns" "ok" "${alterx_dns_resolved}/${alterx_generated} AlterX candidates DNS-validated"
+    else
+        stage_status "alterx-dns" "degraded" "${alterx_dns_resolved}/${alterx_generated} AlterX candidates DNS-validated"
+    fi
+
     detect_wildcard_dns
-    log OK "Scoped names: $(count_lines "$out") (passive: $(count_lines "$passive"), DNS-validated: $(count_lines "$resolved"))"
+    log OK "Scoped names: $(count_lines "$out") (passive: $(count_lines "$passive"), AlterX in-scope generated: ${alterx_generated}, AlterX DNS-validated: ${alterx_dns_resolved}, DNS-validated total: $(count_lines "$dns_scoped"))"
 }
 
 module_alive() {
@@ -1878,6 +1937,62 @@ module_tlsx() {
     stage_status "tls" "ok" "$(count_lines "$issues") issues / $(count_lines "$sans") SANs"
 }
 
+# Optional testssl pass: select only protocol, cipher-category and server-default
+# checks; never run its broad default/vulnerability suite. One IP and at most ten
+# in-scope HTTPS endpoints are tested sequentially.
+module_testssl() {
+    local summary="$OUTPUT_DIR/tls/testssl_summary.txt"
+    local scoped="$OUTPUT_DIR/tls/testssl_targets.scoped.txt"
+    local capped="$OUTPUT_DIR/tls/testssl_targets.txt"
+    local target output json status delay count=0 completed=0 failed=0
+    : > "$summary"
+
+    if (( ! MODULE_TESTSSL )); then
+        stage_status "testssl" "skipped" "opt-in disabled (pass --testssl to enable)"
+        return 0
+    fi
+    if ! check_tool testssl.sh; then
+        log WARN "testssl.sh missing; run bash setup.sh to install pinned v3.2.5."
+        stage_status "testssl" "skipped" "testssl.sh missing"
+        return 0
+    fi
+
+    scope_filter target "$OUTPUT_DIR/alive/urls.txt" "$scoped"
+    head -n "$TESTSSL_MAX_HOSTS" "$scoped" > "$capped"
+    if [[ ! -s "$capped" ]]; then
+        stage_status "testssl" "skipped" "no in-scope HTTPS endpoints"
+        return 0
+    fi
+
+    delay=$(awk -v rate="$RATE_LIMIT" 'BEGIN { if (rate > 0) printf "%.3f", 1 / rate; else print "0.1" }')
+    while IFS= read -r target; do
+        [[ -n "$target" ]] || continue
+        count=$((count + 1))
+        output="$OUTPUT_DIR/tls/testssl_$(printf '%02d' "$count").txt"
+        json="$OUTPUT_DIR/tls/testssl_$(printf '%02d' "$count").json"
+        : > "$output"
+        if run_tool "testssl-${count}" --stdout "$output" testssl.sh \
+            --ip=one --nodns=min --connect-timeout 10 --openssl-timeout 20 \
+            --ids-friendly --disable-rating -p -s -S -q --color 0 \
+            --jsonfile "$json" "$target"; then
+            status="ok"
+            completed=$((completed + 1))
+        else
+            status="failed"
+            failed=$((failed + 1))
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$target" "$status" "$output" "$json" >> "$summary"
+        sleep "$delay"
+    done < "$capped"
+
+    if (( failed == 0 )); then
+        stage_status "testssl" "ok" "${completed}/${count} HTTPS hosts (cap ${TESTSSL_MAX_HOSTS}); selected TLS checks only"
+    else
+        stage_status "testssl" "degraded" "${completed}/${count} HTTPS hosts completed; see logs/testssl-*.err"
+    fi
+    log OK "Optional testssl results saved in $summary"
+}
+
 # A host that only a certificate names never went through the HTTP probe, so it
 # was silently left out of URL collection, nuclei and dalfox. Such hosts are
 # probed here and merged into the host and URL lists, which widens coverage
@@ -2048,6 +2163,147 @@ module_urls() {
     stage_status "urls" "ok" "$(count_lines "$out") URLs"
 }
 
+# Probe conventional JSON and YAML OpenAPI locations, but harvest only GET
+# operations. Documented query parameters feed existing checks; write methods and
+# request-body examples are never replayed.
+module_openapi() {
+    log INFO "OpenAPI route discovery (bounded, GET-only)"
+    local bases="$OUTPUT_DIR/urls/openapi_bases.txt"
+    local specs="$OUTPUT_DIR/urls/openapi_specs.txt"
+    local raw="$OUTPUT_DIR/urls/openapi_endpoints.raw.tmp"
+    local endpoints="$OUTPUT_DIR/urls/openapi_endpoints.txt"
+    local base spec_path spec_url body headers extracted status size delay route query
+    local route_count=0 spec_count=0 yaml_python="" python_candidate=""
+    local -a spec_paths=(
+        /openapi.json /openapi.yaml
+        /swagger.json /swagger.yaml
+        /swagger/v1/swagger.json /swagger/v1/swagger.yaml
+        /v3/api-docs /v3/api-docs.yaml
+        /api-docs /api-docs.yaml
+        /api/openapi.json /api/openapi.yaml
+    )
+    : > "$specs"
+    : > "$raw"
+    : > "$endpoints"
+
+    if ! check_tool curl || ! have_jq; then
+        log WARN "curl or jq missing; skipping OpenAPI discovery."
+        stage_status "openapi" "skipped" "curl or jq missing"
+        return 0
+    fi
+    if [[ ! -s "$OUTPUT_DIR/alive/urls.txt" ]]; then
+        stage_status "openapi" "skipped" "no live URLs"
+        return 0
+    fi
+
+    for python_candidate in "${SCRIPT_DIR}/bugbounty-toolkit/.venv/bin/python" "$(command -v python3 2>/dev/null || true)"; do
+        [[ -x "$python_candidate" ]] || continue
+        if "$python_candidate" -c 'import yaml' >/dev/null 2>&1; then
+            yaml_python="$python_candidate"
+            break
+        fi
+    done
+    if [[ -z "$yaml_python" ]]; then
+        log WARN "Python/PyYAML unavailable; YAML OpenAPI documents are skipped (JSON remains enabled)."
+    fi
+
+    unique_origins "$OUTPUT_DIR/alive/urls.txt" "$bases" "$OPENAPI_MAX_HOSTS"
+    delay=$(awk -v rate="$RATE_LIMIT" 'BEGIN { if (rate > 0) printf "%.3f", 1 / rate; else print "0.1" }')
+
+    while IFS= read -r base; do
+        [[ -n "$base" ]] || continue
+        for spec_path in "${spec_paths[@]}"; do
+            case "${spec_path,,}" in
+                *.yaml|*.yml) [[ -n "$yaml_python" ]] || continue ;;
+            esac
+            spec_url="${base%/}${spec_path}"
+            body=$(mktemp "$OUTPUT_DIR/urls/openapi.XXXXXX") || continue
+            headers=$(mktemp "$OUTPUT_DIR/urls/openapi_headers.XXXXXX") || {
+                rm -f -- "$body"
+                continue
+            }
+            # Enforce the 2 MiB ceiling even for chunked responses with no length.
+            curl_any --silent --show-error --max-time 10 --max-redirs 0 --max-filesize 2097152 \
+                --user-agent "Mozilla/5.0 (compatible; recon-pro/${VERSION})" \
+                --dump-header "$headers" --output - "$spec_url" 2>/dev/null \
+                | head -c 2097153 > "$body" || true
+            sleep "$delay"
+            status=$(awk 'index($1, "HTTP/") == 1 { code = $2 } END { print code }' "$headers" 2>/dev/null)
+            size=$(wc -c < "$body" 2>/dev/null | tr -d '[:space:]')
+            rm -f -- "$headers"
+            case "${spec_path,,}" in
+                *.yaml|*.yml)
+                    if [[ "$status" != "200" ]] || (( ${size:-0} > 2097152 )); then
+                        rm -f -- "$body"
+                        continue
+                    fi
+                    extracted=$(mktemp "$OUTPUT_DIR/urls/openapi_routes.XXXXXX") || {
+                        rm -f -- "$body"
+                        continue
+                    }
+                    if ! "$yaml_python" "${SCRIPT_DIR}/bugbounty-toolkit/openapi_routes.py" \
+                        "$body" "$((OPENAPI_MAX_ENDPOINTS - route_count))" > "$extracted" 2>/dev/null; then
+                        rm -f -- "$body" "$extracted"
+                        continue
+                    fi
+                    printf '%s\n' "$spec_url" >> "$specs"
+                    spec_count=$((spec_count + 1))
+                    while IFS=$'\t' read -r route query; do
+                        (( route_count >= OPENAPI_MAX_ENDPOINTS )) && break
+                        [[ "$route" == /* && "$route" != //* ]] || continue
+                        printf '%s%s%s\n' "${base%/}" "$route" "${query:+?${query}}" >> "$raw"
+                        route_count=$((route_count + 1))
+                    done < "$extracted"
+                    rm -f -- "$body" "$extracted"
+                    break
+                    ;;
+            esac
+            if [[ "$status" != "200" ]] || (( ${size:-0} > 2097152 )) || ! jq -e \
+                '(.paths | type) == "object" and ((.openapi // "" | startswith("3.")) or .swagger == "2.0")' \
+                "$body" >/dev/null 2>&1; then
+                rm -f -- "$body"
+                continue
+            fi
+
+            printf '%s\n' "$spec_url" >> "$specs"
+            spec_count=$((spec_count + 1))
+            while IFS=$'\t' read -r route query; do
+                (( route_count >= OPENAPI_MAX_ENDPOINTS )) && break
+                [[ "$route" == /* && "$route" != //* ]] || continue
+                route=$(sed -E 's/\{[^}]+\}/1/g' <<< "$route")
+                printf '%s%s%s\n' "${base%/}" "$route" "${query:+?${query}}" >> "$raw"
+                route_count=$((route_count + 1))
+            done < <(jq -r '
+                .paths // {} | to_entries[]? |
+                select(.value.get? != null) |
+                .key as $path |
+                ((.value.parameters // []) + (.value.get.parameters // [])) as $params |
+                ([$params[]? | select(.in == "query" and (.name | type == "string")) | (.name | @uri) + "=1"] | unique | join("&")) as $query |
+                [$path, $query] | @tsv
+            ' "$body" 2>/dev/null)
+            rm -f -- "$body"
+            break
+        done
+        (( route_count >= OPENAPI_MAX_ENDPOINTS )) && break
+    done < "$bases"
+
+    scope_filter url "$raw" "$endpoints"
+    if [[ -s "$endpoints" ]]; then
+        cat "$endpoints" >> "$OUTPUT_DIR/urls/all.txt"
+        sort -u -o "$OUTPUT_DIR/urls/all.txt" "$OUTPUT_DIR/urls/all.txt"
+        build_param_candidates
+    fi
+
+    if (( spec_count > 0 )); then
+        log OK "OpenAPI: ${spec_count} valid spec(s), $(count_lines "$endpoints") scoped GET endpoint(s)"
+        stage_status "openapi" "ok" "${spec_count} spec(s) / $(count_lines "$endpoints") GET endpoints (cap ${OPENAPI_MAX_ENDPOINTS})"
+    else
+        log INFO "No valid public OpenAPI/Swagger JSON or YAML spec found on the capped host set."
+        stage_status "openapi" "skipped" "no valid JSON/YAML specification found"
+    fi
+    rm -f -- "$raw"
+}
+
 module_x8() {
     log INFO "Hidden parameter discovery (x8)"
     local out="$OUTPUT_DIR/x8/parameters.json"
@@ -2081,22 +2337,34 @@ module_nuclei() {
     log INFO "Nuclei automated technology-aware scan"
     local out="$OUTPUT_DIR/nuclei/results.txt"
     local jsonl="$OUTPUT_DIR/nuclei/results.jsonl"
+    local targets="$OUTPUT_DIR/nuclei/targets.txt"
+    local targets_raw="$OUTPUT_DIR/nuclei/targets.raw.tmp"
     local rc=0
     : > "$out"
     : > "$jsonl"
+    : > "$targets"
+    : > "$targets_raw"
 
     if ! check_tool nuclei; then
         log WARN "nuclei not found; skipping template scan."
         stage_status "nuclei" "skipped" "nuclei missing"
         return 0
     fi
-    if [[ ! -s "$OUTPUT_DIR/alive/urls.txt" ]]; then
-        log WARN "No alive URLs for nuclei."
-        stage_status "nuclei" "skipped" "no live URLs"
+    [[ -s "$OUTPUT_DIR/alive/urls.txt" ]] && cat "$OUTPUT_DIR/alive/urls.txt" >> "$targets_raw"
+    [[ -s "$OUTPUT_DIR/urls/openapi_endpoints.txt" ]] && cat "$OUTPUT_DIR/urls/openapi_endpoints.txt" >> "$targets_raw"
+    [[ -s "$OUTPUT_DIR/js/endpoints_in_scope.txt" ]] && cat "$OUTPUT_DIR/js/endpoints_in_scope.txt" >> "$targets_raw"
+    if [[ -s "$targets_raw" ]]; then
+        sort -u "$targets_raw" > "$targets"
+        scope_filter url "$targets" "$targets_raw"
+        mv -f -- "$targets_raw" "$targets"
+    fi
+    if [[ ! -s "$targets" ]]; then
+        log WARN "No in-scope URLs for nuclei."
+        stage_status "nuclei" "skipped" "no in-scope URLs"
         return 0
     fi
 
-    local -a opts=(-list "$OUTPUT_DIR/alive/urls.txt" -silent
+    local -a opts=(-list "$targets" -silent
         -severity low,medium,high,critical -exclude-tags dos,fuzz,intrusive
         -rate-limit "$RATE_LIMIT" -concurrency "$THREADS" -timeout 10 -retries 1
         -duc -nc)
@@ -2624,7 +2892,8 @@ EXPOSURES
 # Secrets commonly left in front-end bundles. Scores drive the report ordering;
 # JWT is deliberately low because bundles legitimately carry public tokens.
 JS_SECRET_NAMES=(
-    "AWS access key"
+    "AWS access key ID"
+    "AWS secret access key"
     "Google API key"
     "Google OAuth client secret"
     "Stripe live secret key"
@@ -2635,10 +2904,15 @@ JS_SECRET_NAMES=(
     "Twilio API key"
     "Private key block"
     "JSON Web Token"
+    "GitHub fine-grained token"
+    "npm token"
+    "PyPI token"
+    "Bearer token"
 )
-JS_SECRET_SCORES=(85 80 80 90 85 85 80 80 75 90 40)
+JS_SECRET_SCORES=(85 85 80 80 90 85 85 80 80 75 90 40 85 80 80 75)
 JS_SECRET_PATTERNS=(
-    'AKIA[0-9A-Z]{16}'
+    'A(KIA|IDA|ROA|SIA)[0-9A-Z]{16}'
+    '[Aa][Ww][Ss].{0,20}[Ss][Ee][Cc][Rr][Ee][Tt].{0,20}[Kk][Ee][Yy][^A-Za-z0-9]{1,10}[A-Za-z0-9/+=]{40}'
     'AIza[0-9A-Za-z_-]{35}'
     'GOCSPX-[0-9A-Za-z_-]{28}'
     'sk_live_[0-9A-Za-z]{24,}'
@@ -2649,6 +2923,10 @@ JS_SECRET_PATTERNS=(
     'SK[0-9a-f]{32}'
     '-----BEGIN [A-Z ]*PRIVATE KEY-----'
     'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+    'github_pat_[A-Za-z0-9_]{22,}'
+    'npm_[A-Za-z0-9]{36}'
+    'pypi-[A-Za-z0-9_-]{50,}'
+    'Bearer[[:space:]]+[A-Za-z0-9._~+/=-]{20,}'
 )
 
 js_is_placeholder() {
@@ -2691,20 +2969,110 @@ js_scan_secrets() {
     done
 }
 
+# Normalize an HTTP(S) URL to its origin. Userinfo and malformed authorities are
+# rejected so a source-map directive cannot smuggle credentials or another host.
+url_origin() {
+    local url="$1" scheme authority host port="" port_number
+    [[ "$url" =~ ^(https?)://([^/?#]+) ]] || return 1
+    scheme="${BASH_REMATCH[1],,}"
+    authority="${BASH_REMATCH[2],,}"
+    [[ "$authority" != *@* ]] || return 1
+
+    if [[ "$authority" =~ ^([^:]+):([0-9]{1,5})$ ]]; then
+        host="${BASH_REMATCH[1]}"
+        port="${BASH_REMATCH[2]}"
+        port_number=$((10#$port))
+        (( port_number >= 1 && port_number <= 65535 )) || return 1
+    else
+        host="$authority"
+        [[ "$host" != *:* ]] || return 1
+    fi
+    [[ "$host" =~ ^[a-z0-9.-]+$ ]] || return 1
+
+    if [[ ( "$scheme" == "https" && "${port:-443}" == "443" ) || \
+          ( "$scheme" == "http" && "${port:-80}" == "80" ) ]]; then
+        printf '%s://%s' "$scheme" "$host"
+    elif [[ -n "$port" ]]; then
+        printf '%s://%s:%s' "$scheme" "$host" "$port_number"
+    else
+        printf '%s://%s' "$scheme" "$host"
+    fi
+}
+
+# Resolve a sourceMappingURL reference and require an exact scheme/host/port
+# match with the JavaScript file. Redirects are separately disabled at fetch time.
+js_source_map_url() {
+    local script_url="$1" reference="$2" origin scheme authority path directory resolved script_origin resolved_origin
+    reference="${reference%%#*}"
+    [[ -n "$reference" && ${#reference} -le 2048 ]] || return 1
+    case "${reference,,}" in data:*|javascript:*) return 1 ;; esac
+
+    if [[ "${reference,,}" =~ ^https?:// ]]; then
+        resolved="$reference"
+    elif [[ "$reference" == //* ]]; then
+        scheme="${script_url%%://*}"
+        resolved="${scheme}:${reference}"
+    else
+        origin=$(url_origin "$script_url") || return 1
+        if [[ "$reference" == /* ]]; then
+            resolved="${origin}${reference}"
+        else
+            authority="${script_url#*://}"
+            authority="${authority%%[/?#]*}"
+            path="${script_url#*://}"
+            path="${path#"$authority"}"
+            path="${path%%\?*}"
+            path="${path%%\#*}"
+            [[ -n "$path" ]] || path="/"
+            directory="${path%/*}"
+            [[ "$directory" != "$path" ]] || directory="/"
+            resolved="${origin}${directory%/}/${reference}"
+        fi
+    fi
+
+    script_origin=$(url_origin "$script_url") || return 1
+    resolved_origin=$(url_origin "$resolved") || return 1
+    [[ "$script_origin" == "$resolved_origin" ]] || return 1
+    printf '%s' "$resolved"
+}
+
+# Mine a bounded number of endpoint-looking strings from a JS or source-content
+# file. Scope is checked separately before any discovered URL reaches a scanner.
+js_extract_endpoints() {
+    local file="$1" base="$2" out="$3" cap="$4" scheme="${2%%://*}"
+    (( cap > 0 )) || return 0
+    {
+        grep -aoE 'https?://[A-Za-z0-9._-]+(:[0-9]+)?/[A-Za-z0-9_./?=&%~-]*' "$file" || true
+        grep -aoE '"/[A-Za-z0-9_./?=&%~-]{3,120}"' "$file" | tr -d '"' || true
+        grep -aoE "'/[A-Za-z0-9_./?=&%~-]{3,120}'" "$file" | tr -d "'" || true
+    } | awk -v base="$base" -v scheme="$scheme" '
+        /^https?:\/\// { print; next }
+        /^\/\// { print scheme ":" $0; next }
+        /^\// { print base $0 }
+    ' | sort -u | head -n "$cap" >> "$out" || true
+}
+
 module_js() {
-    log INFO "JavaScript analysis (endpoints and secrets)"
+    log INFO "JavaScript analysis (endpoints, source maps and secrets)"
     local dir="$OUTPUT_DIR/js"
     local list="$dir/urls.txt"
     local secrets="$dir/secrets.txt"
+    local source_maps="$dir/source_maps.txt"
     local raw="$dir/endpoints_raw.txt"
     local scoped="$dir/endpoints_in_scope.txt"
-    local url file host base count=0
+    local map_candidate="$dir/source_map_candidate.tmp"
+    local map_scoped="$dir/source_map_scoped.tmp"
+    local url file host base script_headers script_status map_ref map_url map_body map_headers map_content map_status map_size source_count
+    local count=0 map_count=0 raw_count=0 remaining=0 delay
 
     mkdir -p -- "$dir"
     : > "$list"
     : > "$secrets"
+    : > "$source_maps"
     : > "$raw"
     : > "$scoped"
+    : > "$map_candidate"
+    : > "$map_scoped"
 
     if (( ! MODULE_JS )); then
         stage_status "js" "skipped" "disabled in settings"
@@ -2730,29 +3098,104 @@ module_js() {
         return 0
     fi
 
+    delay=$(awk -v rate="$RATE_LIMIT" 'BEGIN { if (rate > 0) printf "%.3f", 1 / rate; else print "0.1" }')
     while IFS= read -r url; do
         count=$((count + 1))
         file="$dir/file_${count}.js"
-        fetch_body "$url" "$file" 15 || continue
-        [[ -s "$file" ]] || continue
+        script_headers=$(mktemp "$dir/js_headers.XXXXXX") || continue
+        # Stop at 1 MiB + one sentinel byte, and never follow a cross-scope redirect.
+        curl_any --silent --show-error --max-time 15 --max-redirs 0 \
+            --user-agent "Mozilla/5.0 (compatible; recon-pro/${VERSION})" \
+            --dump-header "$script_headers" --output - "$url" 2>/dev/null \
+            | head -c 1048577 > "$file" || true
+        sleep "$delay"
+        script_status=$(awk 'index($1, "HTTP/") == 1 { code = $2 } END { print code }' "$script_headers" 2>/dev/null)
+        rm -f -- "$script_headers"
+        [[ "$script_status" == "200" && -s "$file" ]] || continue
 
-        # Keep the artefact as evidence but bound the regex work.
+        # Keep the artefact as evidence but bound every parser and regex pass.
         head -c 1048576 "$file" > "${file}.cut" 2>/dev/null || true
         mv -f -- "${file}.cut" "$file" 2>/dev/null || true
 
         host=$(host_of "$url")
-        base="https://${host}"
+        base=$(url_origin "$url" 2>/dev/null) || continue
 
         js_scan_secrets "$url" "$host" "$file" "$secrets"
+        raw_count=$(count_lines "$raw")
+        remaining=$((JS_MAX_ENDPOINTS - raw_count))
+        js_extract_endpoints "$file" "$base" "$raw" "$remaining"
 
-        {
-            grep -aoE 'https?://[A-Za-z0-9._-]+(:[0-9]+)?/[A-Za-z0-9_./?=&%~-]*' "$file" || true
-            grep -aoE '"/[A-Za-z0-9_./?=&%~-]{3,80}"' "$file" | tr -d '"' || true
-        } | sort -u | head -n 100 \
-            | awk -v base="$base" '{
-                if ($0 ~ /^https?:\/\//) print $0; else print base $0
-            }' >> "$raw"
+        # Read the last source-map directive only; data URLs and cross-origin
+        # references are rejected by js_source_map_url before being stored.
+        map_ref=$(grep -aoE 'sourceMappingURL=[^[:space:]]+' "$file" 2>/dev/null \
+            | tail -n 1 | sed -E 's/^sourceMappingURL=//; s/\*\/$//')
+        if [[ -n "$map_ref" ]]; then
+            map_url=$(js_source_map_url "$url" "$map_ref" 2>/dev/null || true)
+            [[ -n "$map_url" ]] && printf '%s\n' "$map_url" >> "$map_candidate"
+        fi
     done < "$list"
+
+    # Scope-filter a second time before fetching; exact-origin validation above
+    # prevents a sibling host or redirect from broadening map access.
+    if have_jq; then
+        scope_filter url "$map_candidate" "$map_scoped"
+    else
+        log WARN "jq missing; source-map JSON inspection is skipped."
+    fi
+    while IFS= read -r map_url; do
+        [[ -n "$map_url" ]] || continue
+        map_count=$((map_count + 1))
+        (( map_count > JS_MAX_SOURCE_MAPS )) && break
+
+        map_body=$(mktemp "$dir/source_map.XXXXXX") || continue
+        map_headers=$(mktemp "$dir/source_map_headers.XXXXXX") || {
+            rm -f -- "$map_body"
+            continue
+        }
+        curl_any --silent --show-error --max-time 15 --max-redirs 0 \
+            --max-filesize 2097152 \
+            --user-agent "Mozilla/5.0 (compatible; recon-pro/${VERSION})" \
+            --dump-header "$map_headers" --output - "$map_url" 2>/dev/null \
+            | head -c 2097153 > "$map_body" || true
+        sleep "$delay"
+        map_status=$(awk 'index($1, "HTTP/") == 1 { code = $2 } END { print code }' "$map_headers" 2>/dev/null)
+        map_size=$(wc -c < "$map_body" 2>/dev/null | tr -d '[:space:]')
+        rm -f -- "$map_headers"
+        if [[ "$map_status" != "200" ]] || (( ${map_size:-0} > 2097152 )) || \
+           ! jq -e 'type == "object" and .version == 3 and (.sources | type == "array")' \
+                "$map_body" >/dev/null 2>&1; then
+            printf '[SKIP] %s — HTTP %s or invalid/oversized source map\n' \
+                "$map_url" "${map_status:-000}" >> "$source_maps"
+            rm -f -- "$map_body"
+            continue
+        fi
+
+        source_count=$(jq '[.sourcesContent[]? | select(type == "string")] | length' \
+            "$map_body" 2>/dev/null || printf '0')
+        printf '[OK] %s — valid source map; embedded sources: %s\n' \
+            "$map_url" "${source_count:-0}" >> "$source_maps"
+
+        if [[ "${source_count:-0}" =~ ^[0-9]+$ ]] && (( source_count > 0 )); then
+            map_content=$(mktemp "$dir/source_content.XXXXXX") || {
+                rm -f -- "$map_body"
+                continue
+            }
+            jq -r '.sourcesContent[]? | select(type == "string")' "$map_body" \
+                > "$map_content" 2>/dev/null || :
+            if [[ -s "$map_content" ]]; then
+                head -c 2097152 "$map_content" > "${map_content}.cut" 2>/dev/null || true
+                mv -f -- "${map_content}.cut" "$map_content" 2>/dev/null || true
+                host=$(host_of "$map_url")
+                base=$(url_origin "$map_url" 2>/dev/null) || base=""
+                js_scan_secrets "$map_url" "$host" "$map_content" "$secrets"
+                raw_count=$(count_lines "$raw")
+                remaining=$((JS_MAX_ENDPOINTS - raw_count))
+                js_extract_endpoints "$map_content" "$base" "$raw" "$remaining"
+            fi
+            rm -f -- "$map_content"
+        fi
+        rm -f -- "$map_body"
+    done < <(head -n "$JS_MAX_SOURCE_MAPS" "$map_scoped")
 
     scope_filter url "$raw" "$scoped"
 
@@ -2764,8 +3207,8 @@ module_js() {
         build_param_candidates
     fi
 
-    log OK "JavaScript: $(count_lines "$list") file(s), $(count_lines "$secrets") secret(s), $(count_lines "$scoped") new in-scope endpoint(s)"
-    stage_status "js" "ok" "$(count_lines "$secrets") secret(s) / $(count_lines "$scoped") endpoint(s)"
+    log OK "JavaScript: $(count_lines "$list") file(s), ${map_count} source-map request(s), $(count_lines "$secrets") secret(s), $(count_lines "$scoped") new in-scope endpoint(s)"
+    stage_status "js" "ok" "$(count_lines "$secrets") secret(s) / ${map_count} source-map request(s) / $(count_lines "$scoped") endpoint(s)"
 }
 
 # Classify parameterised URLs by the vulnerability class their parameter names
@@ -3380,12 +3823,16 @@ build_markdown_report() {
             "alive/urls.txt:live URLs" \
             "urls/params.txt:parameterised candidates" \
             "tls/in_scope_sans.txt:certificate names" \
+            "tls/testssl_summary.txt:optional bounded testssl.sh TLS checks" \
             "web/header_audit.txt:header observations" \
             "web/cors.txt:CORS notes" \
             "web/exposures.txt:exposed paths" \
             "web/open_redirect.txt:redirects" \
             "web/graphql.txt:GraphQL notes" \
-            "js/secrets.txt:JavaScript secrets" \
+            "urls/openapi_specs.txt:public API specifications" \
+            "urls/openapi_endpoints.txt:GET routes documented by OpenAPI" \
+            "js/source_maps.txt:bounded same-origin source-map results" \
+            "js/secrets.txt:JavaScript and embedded source-map secrets (masked)" \
             "nuclei/results.txt:nuclei matches" \
             "ports/naabu.txt:open ports" \
             "final/summary.txt:counts" \
@@ -3438,6 +3885,7 @@ module_report() {
 
     tls_count=$(count_lines "$OUTPUT_DIR/tls/misconfigurations.txt")
     report_section "$body" "TLS CERTIFICATE CHECKS (validate findings)" "$OUTPUT_DIR/tls/misconfigurations.txt"
+    report_section "$body" "OPTIONAL TESTSSL.SH TLS CHECKS (selected checks; review manually)" "$OUTPUT_DIR/tls/testssl_summary.txt"
 
     san_count=$(count_lines "$OUTPUT_DIR/tls/in_scope_sans.txt")
     report_section "$body" "IN-SCOPE TLS SAN CANDIDATES (review before testing)" "$OUTPUT_DIR/tls/in_scope_sans.txt"
@@ -3460,6 +3908,9 @@ module_report() {
     report_section "$body" "SENSITIVE FILES AND ENDPOINTS (content-confirmed)" "$OUTPUT_DIR/web/exposures.txt"
     report_section "$body" "OPEN REDIRECTS (confirmed)" "$OUTPUT_DIR/web/open_redirect.txt"
     report_section "$body" "GRAPHQL" "$OUTPUT_DIR/web/graphql.txt"
+    report_section "$body" "PUBLIC OPENAPI / SWAGGER SPECIFICATIONS" "$OUTPUT_DIR/urls/openapi_specs.txt"
+    report_section "$body" "GET ROUTES FROM OPENAPI (first 100)" "$OUTPUT_DIR/urls/openapi_endpoints.txt" 100
+    report_section "$body" "SOURCE MAP DISCOVERY (same-origin, bounded)" "$OUTPUT_DIR/js/source_maps.txt"
     report_section "$body" "SECRETS AND TOKENS IN JAVASCRIPT (masked)" "$OUTPUT_DIR/js/secrets.txt"
     report_section "$body" "NEW ENDPOINTS FROM JAVASCRIPT (in scope, first 40)" "$OUTPUT_DIR/js/endpoints_in_scope.txt" 40
     report_section "$body" "PARAMETER CLASSES (gf / built-in)" "$OUTPUT_DIR/gf/summary.txt"
@@ -3726,10 +4177,12 @@ run_discovery() {
 
 run_scans() {
     module_tlsx
+    module_testssl
     module_san_hosts
     module_headers
     module_whatweb
     module_urls
+    module_openapi
     module_js
     module_gf
     module_open_redirect
@@ -3778,6 +4231,7 @@ Usage: $(basename -- "$0") [options] [domain]
 
   domain         Apex domain (e.g. example.com); runs the full pipeline
   -y, --yes      Skip the AUTHORIZED confirmation (non-interactive runs)
+  --testssl      Opt in to bounded testssl.sh TLS checks (max 10 HTTPS hosts)
   -c, --check    Show installed tools and wordlist paths, then exit
   -h, --help     Show this help
 
@@ -3966,6 +4420,7 @@ main() {
     while (( $# )); do
         case "$1" in
             -y|--yes) ASSUME_YES=1 ;;
+            --testssl) MODULE_TESTSSL=1 ;;
             -c|--check) CHECK_ONLY=1 ;;
             -h|--help) usage; return 0 ;;
             -*) log ERROR "Unknown option: ${1}"; usage; return 2 ;;
