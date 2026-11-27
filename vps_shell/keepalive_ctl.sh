@@ -60,13 +60,20 @@ if ! command -v adb >/dev/null 2>&1; then
 fi
 command -v adb >/dev/null 2>&1 || skip "adb tidak ada di PATH (${PATH})"
 
+# One-line context for the "no adb server" case: it is usually a container or a
+# server started by another tool.
+ADB_KEEPALIVE_HINT=${ADB_KEEPALIVE_HINT:-"adb=$(command -v adb 2>/dev/null || echo none); proses=$(
+    ps -eo args= 2>/dev/null | grep -c '[a]db' || true); port5037=$(
+    (command -v ss >/dev/null 2>&1 && ss -ltnp 2>/dev/null | grep ':5037' | head -1 | tr -s ' ' || true) | paste -sd' ' -); docker=$(
+    (command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}:{{.Image}}' 2>/dev/null | head -3 || true) | paste -sd',' -)"}
+
 # The adb server is per user, so the keepalive must run as the account that
 # already owns it; a second server under another user would keep nothing alive.
 owner=${ADB_KEEPALIVE_USER:-}
 if [[ -z "$owner" ]]; then
     owner=$(ps -eo user=,args= 2>/dev/null | awk '/\[adb\].*fork-server/ {print $1; exit}')
 fi
-[[ -n "$owner" ]] || skip "tidak menemukan adb server yang jalan (docker/container?)"
+[[ -n "$owner" ]] || skip "tidak menemukan adb server yang jalan (${ADB_KEEPALIVE_HINT:-})"
 home=$(getent passwd "$owner" 2>/dev/null | cut -d: -f6)
 [[ -n "$home" && -d "$home" ]] || skip "home untuk user ${owner} tidak ada"
 
