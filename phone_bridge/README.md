@@ -35,6 +35,20 @@ far smaller than `uiautomator`'s XML and already carries tap coordinates.
 The device still needs ~0.3–0.8s for `uiautomator dump`; this script only removes
 the network cost, which is the part the VPS cannot avoid.
 
+## Measured on the POCO X5 Pro
+
+| Step | Cost |
+|---|---|
+| Network round trip (VPS ↔ phone over Tailscale/hotspot) | ~93 ms average |
+| `uiautomator dump` on the device | **~2.1 s** (a fresh JVM each time) |
+| `phone.sh dump` end to end | network + one dump |
+| `phone.sh tap "<teks>"` end to end | network + two dumps + tap |
+
+The surprise is the second row: after the round trips are gone, the cost that
+dominates is `uiautomator`, not the link. Anything that wants sub-200 ms UI
+reads needs a persistent automation daemon (`uiautomator2`'s ATX app, Appium), not
+more shell batching.
+
 ## Limits
 
 - The device must be **unlocked**. A locked screen (keyguard) dumps an empty
