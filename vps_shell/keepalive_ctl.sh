@@ -71,7 +71,16 @@ ADB_KEEPALIVE_HINT=${ADB_KEEPALIVE_HINT:-"adb=$(command -v adb 2>/dev/null || ec
 # already owns it; a second server under another user would keep nothing alive.
 owner=${ADB_KEEPALIVE_USER:-}
 if [[ -z "$owner" ]]; then
-    owner=$(ps -eo user=,args= 2>/dev/null | awk '/\[adb\].*fork-server/ {print $1; exit}')
+    server_pid=$(ss -ltnp 2>/dev/null | grep ':5037 ' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2 || true)
+    if [[ -n "$server_pid" ]]; then
+        owner=$(ps -o user= -p "$server_pid" 2>/dev/null | tr -d ' ')
+    fi
+fi
+if [[ -z "$owner" ]]; then
+    # The server rewrites its own title to "[adb] -L ... fork-server", but some
+    # builds keep the plain command line, so both forms are accepted.
+    owner=$(ps -eo user=,args= 2>/dev/null | awk '
+        /fork-server/ && ($0 ~ /\[adb\]/ || $0 ~ /(^|[\/ ])adb /) {print $1; exit}')
 fi
 [[ -n "$owner" ]] || skip "tidak menemukan adb server yang jalan (${ADB_KEEPALIVE_HINT:-})"
 home=$(getent passwd "$owner" 2>/dev/null | cut -d: -f6)
