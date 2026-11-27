@@ -220,8 +220,20 @@ EOF
 fi
 
 # 2. The caller is sandboxed (Recon Pro's MCP unit mounts /etc and /usr
-#    read-only). Keep a cron line so the next minute promotes this to a real
-#    unit, then ask systemd for a transient unit so it runs right now.
+#    read-only), but a persistent unit is already installed (the cron promotion
+#    below finished, or someone ran this with sudo): just keep it running.
+if [[ -f "$UNIT_FILE" ]]; then
+    systemctl enable adb-keepalive.service >/dev/null 2>&1 || true
+    if (( force )) || (( changed )) || ! systemctl is-active --quiet adb-keepalive.service; then
+        systemctl restart adb-keepalive.service
+    fi
+    printf 'adb-keepalive: %s (unit persisten, user %s, target %s)\n' \
+        "$(systemctl is-active adb-keepalive.service 2>/dev/null || true)" "$owner" "$serials"
+    exit 0
+fi
+
+# 3. Nothing persistent yet: leave a cron line so the next minute promotes this
+#    to a real unit, and ask systemd for a transient unit so it runs right now.
 ensure_cron
 if command -v systemd-run >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
     if (( force )) || (( changed )) || ! systemctl is-active --quiet adb-keepalive.service; then
@@ -251,7 +263,7 @@ if command -v systemd-run >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
     fi
 fi
 
-# 3. Last resort: a detached process, re-created on the next update.
+# 4. Last resort: a detached process, re-created on the next update.
 if [[ -s "$PID_FILE" ]]; then
     old=$(cat -- "$PID_FILE")
     if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" 2>/dev/null; then
