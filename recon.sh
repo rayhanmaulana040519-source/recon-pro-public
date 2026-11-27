@@ -1334,6 +1334,15 @@ update_repo() {
 
     self_test
 
+    # This host may also be the one holding the adb server for a phone on the
+    # network (Recon Pro's VPS is). Keep that transport alive after the pull;
+    # the installer stays silent unless this is root, adb exists and the server
+    # is already running.
+    if [[ -f "${SCRIPT_DIR}/vps_shell/keepalive_ctl.sh" ]]; then
+        "$BASH_BIN" "${SCRIPT_DIR}/vps_shell/keepalive_ctl.sh" \
+            || warn "adb-keepalive tidak terpasang; koneksi adb harus di-connect manual."
+    fi
+
     pid=$(tr -dc '0-9' < "$RECON_HOME/state/bot/bot.lock" 2>/dev/null)
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
         warn "Bot masih jalan dengan kode lama (PID ${pid}). Restart: bash recon.sh --stop-bot && python3 recon_pro_bot.py"

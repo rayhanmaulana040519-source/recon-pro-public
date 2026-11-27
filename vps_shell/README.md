@@ -8,6 +8,25 @@ Use it only while you need remote work on the VPS, and stop it afterwards. It
 runs with the permissions of whoever starts it, so run it as the checkout owner,
 never as root.
 
+## adb keepalive
+
+`bash recon.sh --update` also re-installs the adb keepalive service, so a host
+that holds the adb server for an `ip:port` device keeps that transport alive
+across Wi-Fi drops and reboots. It stays silent unless the host is root, has
+`adb` installed, and already owns a running adb server, and it runs the loop as
+the account that owns that server (a second adb server under another user would
+keep nothing alive).
+
+```bash
+sudo bash vps_shell/keepalive_ctl.sh              # install/refresh now
+sudo bash vps_shell/keepalive_ctl.sh --uninstall  # remove it again
+ADB_KEEPALIVE=0                                   # in state/recon_pro.conf: never install
+```
+
+Logs: `journalctl -u adb-keepalive -n 50 --no-pager`. Overrides:
+`ADB_KEEPALIVE_USER`, `ADB_KEEPALIVE_SERIALS` (space separated), and
+`ADB_KEEPALIVE_INTERVAL` (seconds, default 5).
+
 ## Start it (temporary HTTPS URL)
 
 ```bash
