@@ -6,8 +6,10 @@
 # server for a network device. Override the owner or targets with
 # ADB_KEEPALIVE_USER and ADB_KEEPALIVE_SERIALS.
 #
-#   sudo bash vps_shell/keepalive_ctl.sh
-#   sudo bash vps_shell/keepalive_ctl.sh --uninstall
+#   sudo bash vps_shell/keepalive_ctl.sh              install/refresh
+#   sudo bash vps_shell/keepalive_ctl.sh --restart    force a fresh process
+#        bash vps_shell/keepalive_ctl.sh --status     unit, devices, last log
+#   sudo bash vps_shell/keepalive_ctl.sh --uninstall  stop and remove
 set -euo pipefail
 umask 077
 
@@ -20,21 +22,51 @@ PID_FILE="${STATE_DIR}/adb-keepalive.pid"
 LOG_FILE="${STATE_DIR}/adb-keepalive.log"
 UNIT_FILE=/etc/systemd/system/adb-keepalive.service
 
-if [[ "${1:-}" == "--uninstall" ]]; then
-    (( EUID == 0 )) || { printf 'Jalankan sebagai root: sudo bash %s --uninstall\n' "${BASH_SOURCE[0]}" >&2; exit 1; }
-    systemctl disable --now adb-keepalive.service >/dev/null 2>&1 || true
-    systemctl stop adb-keepalive.service >/dev/null 2>&1 || true
-    systemctl reset-failed adb-keepalive.service >/dev/null 2>&1 || true
-    if [[ -s "$PID_FILE" ]]; then
-        old=$(cat -- "$PID_FILE")
-        [[ "$old" =~ ^[0-9]+$ ]] && kill "$old" 2>/dev/null || true
-        rm -f -- "$PID_FILE"
-    fi
-    rm -f -- "$UNIT_FILE" "$BIN_FILE"
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    printf 'adb-keepalive dihentikan dan dihapus.\n'
-    exit 0
-fi
+force=0
+case "${1:-}" in
+    ""|--install)
+        ;;
+    --restart)
+        force=1
+        ;;
+    --status)
+        if command -v systemctl >/dev/null 2>&1; then
+            printf 'unit  : %s\n' "$(systemctl is-active adb-keepalive.service 2>/dev/null || echo 'tidak ada')"
+            unit_pid=$(systemctl show -p MainPID --value adb-keepalive.service 2>/dev/null || true)
+            if [[ -n "${unit_pid:-}" && "$unit_pid" != "0" ]]; then
+                printf 'pid   : %s\n' "$unit_pid"
+            fi
+        fi
+        if command -v journalctl >/dev/null 2>&1; then
+            journalctl -u adb-keepalive -n 8 --no-pager 2>/dev/null | tail -8 || true
+        elif [[ -s "$LOG_FILE" ]]; then
+            tail -8 "$LOG_FILE" || true
+        fi
+        exit 0
+        ;;
+    --uninstall)
+        if (( EUID != 0 )); then
+            printf 'Jalankan sebagai root: sudo bash %s --uninstall\n' "${BASH_SOURCE[0]}" >&2
+            exit 1
+        fi
+        systemctl disable --now adb-keepalive.service >/dev/null 2>&1 || true
+        systemctl stop adb-keepalive.service >/dev/null 2>&1 || true
+        systemctl reset-failed adb-keepalive.service >/dev/null 2>&1 || true
+        if [[ -s "$PID_FILE" ]]; then
+            old=$(cat -- "$PID_FILE")
+            [[ "$old" =~ ^[0-9]+$ ]] && kill "$old" 2>/dev/null || true
+            rm -f -- "$PID_FILE"
+        fi
+        rm -f -- "$UNIT_FILE" "$BIN_FILE"
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        printf 'adb-keepalive dihentikan dan dihapus.\n'
+        exit 0
+        ;;
+    *)
+        printf 'Pemakaian: %s [--install|--restart|--status|--uninstall]\n' "${BASH_SOURCE[0]}" >&2
+        exit 2
+        ;;
+esac
 
 skip() {
     printf 'adb-keepalive: dilewati (%s)\n' "$*"
@@ -100,8 +132,30 @@ if [[ -z "$serials" ]]; then
 fi
 [[ -n "$serials" ]] || skip "tidak ada device adb ip:port yang connected"
 
-interval=${ADB_KEEPALIVE_INTERVAL:-5}
+INTERVAL=${ADB_KEEPALIVE_INTERVAL:-5}
+FAST_INTERVAL=${ADB_KEEPALIVE_FAST_INTERVAL:-1}
+RESTART_AFTER=${ADB_KEEPALIVE_RESTART_AFTER:-6}
+HEARTBEAT=${ADB_KEEPALIVE_HEARTBEAT:-300}
+
+changed=0
+if [[ ! -f "$BIN_FILE" ]] || ! cmp -s "${SCRIPT_DIR}/adb_keepalive.sh" "$BIN_FILE"; then
+    changed=1
+fi
 install -m 755 "${SCRIPT_DIR}/adb_keepalive.sh" "$BIN_FILE"
+
+# adb keeps its socket with SO_KEEPALIVE, so a shorter kernel keepalive makes a
+# dead phone link fail in about 90s instead of the ~15 minute TCP default.
+if command -v sysctl >/dev/null 2>&1; then
+    tuned=""
+    for pair in net.ipv4.tcp_keepalive_time=60 net.ipv4.tcp_keepalive_intvl=10 net.ipv4.tcp_keepalive_probes=3; do
+        if sysctl -w "$pair" >/dev/null 2>&1; then
+            tuned="${tuned} ${pair}"
+        fi
+    done
+    if [[ -n "$tuned" ]]; then
+        printf 'adb-keepalive: sysctl diringankan (%s)\n' "${tuned# }"
+    fi
+fi
 
 # 1. A real unit survives reboots, when /etc is writable for this caller.
 if [[ -w /etc/systemd/system ]]; then
@@ -117,7 +171,10 @@ User=${owner}
 Environment=HOME=${home}
 Environment=PATH=${PATH}
 Environment=ADB_KEEPALIVE_SERIALS=${serials}
-Environment=ADB_KEEPALIVE_INTERVAL=${interval}
+Environment=ADB_KEEPALIVE_INTERVAL=${INTERVAL}
+Environment=ADB_KEEPALIVE_FAST_INTERVAL=${FAST_INTERVAL}
+Environment=ADB_KEEPALIVE_RESTART_AFTER=${RESTART_AFTER}
+Environment=ADB_KEEPALIVE_HEARTBEAT=${HEARTBEAT}
 ExecStart=${BIN_FILE}
 Restart=always
 RestartSec=5
@@ -137,24 +194,29 @@ fi
 # 2. The caller is sandboxed (Recon Pro's MCP unit mounts /etc and /usr
 #    read-only). Ask systemd for a transient unit of the same name instead.
 if command -v systemd-run >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
-    if systemctl is-active --quiet adb-keepalive.service; then
+    if (( force )) || (( changed )) || ! systemctl is-active --quiet adb-keepalive.service; then
+        systemctl stop adb-keepalive.service >/dev/null 2>&1 || true
+        systemctl reset-failed adb-keepalive.service >/dev/null 2>&1 || true
+        if systemd-run --unit=adb-keepalive --collect \
+            --description="Keep adb devices connected" \
+            --property=User="$owner" \
+            --property=Restart=always \
+            --property=RestartSec=5 \
+            --property=Environment="HOME=$home" \
+            --property=Environment="PATH=$PATH" \
+            --property=Environment="ADB_KEEPALIVE_SERIALS=$serials" \
+            --property=Environment="ADB_KEEPALIVE_INTERVAL=$INTERVAL" \
+            --property=Environment="ADB_KEEPALIVE_FAST_INTERVAL=$FAST_INTERVAL" \
+            --property=Environment="ADB_KEEPALIVE_RESTART_AFTER=$RESTART_AFTER" \
+            --property=Environment="ADB_KEEPALIVE_HEARTBEAT=$HEARTBEAT" \
+            /bin/bash "$BIN_FILE" >/dev/null 2>&1; then
+            printf 'adb-keepalive: %s (unit transient, user %s, target %s)\n' \
+                "$(systemctl is-active adb-keepalive.service 2>/dev/null || true)" "$owner" "$serials"
+            exit 0
+        fi
+    else
         printf 'adb-keepalive: %s (unit transient, user %s, target %s)\n' \
             "active" "$owner" "$serials"
-        exit 0
-    fi
-    systemctl reset-failed adb-keepalive.service >/dev/null 2>&1 || true
-    if systemd-run --unit=adb-keepalive --collect \
-        --description="Keep adb devices connected" \
-        --property=User="$owner" \
-        --property=Restart=always \
-        --property=RestartSec=5 \
-        --property=Environment="HOME=$home" \
-        --property=Environment="PATH=$PATH" \
-        --property=Environment="ADB_KEEPALIVE_SERIALS=$serials" \
-        --property=Environment="ADB_KEEPALIVE_INTERVAL=$interval" \
-        /bin/bash "$BIN_FILE" >/dev/null 2>&1; then
-        printf 'adb-keepalive: %s (unit transient, user %s, target %s)\n' \
-            "$(systemctl is-active adb-keepalive.service 2>/dev/null || true)" "$owner" "$serials"
         exit 0
     fi
 fi
@@ -162,11 +224,15 @@ fi
 # 3. Last resort: a detached process, re-created on the next update.
 if [[ -s "$PID_FILE" ]]; then
     old=$(cat -- "$PID_FILE")
-    [[ "$old" =~ ^[0-9]+$ ]] && kill "$old" 2>/dev/null || true
+    if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" 2>/dev/null; then
+        kill "$old" 2>/dev/null || true
+    fi
     rm -f -- "$PID_FILE"
 fi
 setsid nohup runuser -u "$owner" -- env HOME="$home" PATH="$PATH" \
-    ADB_KEEPALIVE_SERIALS="$serials" ADB_KEEPALIVE_INTERVAL="$interval" \
+    ADB_KEEPALIVE_SERIALS="$serials" ADB_KEEPALIVE_INTERVAL="$INTERVAL" \
+    ADB_KEEPALIVE_FAST_INTERVAL="$FAST_INTERVAL" ADB_KEEPALIVE_RESTART_AFTER="$RESTART_AFTER" \
+    ADB_KEEPALIVE_HEARTBEAT="$HEARTBEAT" \
     /bin/bash "$BIN_FILE" </dev/null >>"$LOG_FILE" 2>&1 &
 printf '%s\n' "$!" > "$PID_FILE"
 printf 'adb-keepalive: proses detached (user %s, target %s, log %s)\n' "$owner" "$serials" "$LOG_FILE"

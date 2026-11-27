@@ -19,13 +19,20 @@ keep nothing alive).
 
 ```bash
 sudo bash vps_shell/keepalive_ctl.sh              # install/refresh now
+sudo bash vps_shell/keepalive_ctl.sh --restart    # force a fresh process
+bash vps_shell/keepalive_ctl.sh --status          # unit, pid, last log lines
 sudo bash vps_shell/keepalive_ctl.sh --uninstall  # remove it again
 ADB_KEEPALIVE=0                                   # in state/recon_pro.conf: never install
 ```
 
+The loop checks every 5s while healthy, drops to 1s while a device is down, and
+restarts the adb server itself after 6 failed rounds. Installing also shortens
+the kernel TCP keepalive (60s idle, 3 probes) so a dead phone link is noticed in
+about a minute and a half instead of the 15 minute default.
+
 Logs: `journalctl -u adb-keepalive -n 50 --no-pager`. Overrides:
-`ADB_KEEPALIVE_USER`, `ADB_KEEPALIVE_SERIALS` (space separated), and
-`ADB_KEEPALIVE_INTERVAL` (seconds, default 5).
+`ADB_KEEPALIVE_USER`, `ADB_KEEPALIVE_SERIALS` (space separated), and the
+`ADB_KEEPALIVE_*` knobs in the script header.
 
 ## Start it (temporary HTTPS URL)
 
