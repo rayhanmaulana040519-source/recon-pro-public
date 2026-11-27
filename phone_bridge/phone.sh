@@ -1,39 +1,49 @@
 #!/system/bin/sh
-# phone.sh - one network round trip instead of many.
+# phone.sh - one RPC call instead of many adb round trips.
 #
-# Deploy: adb push phone.sh /sdcard/phone/phone.sh
-# Use:    adb shell sh /sdcard/phone/phone.sh <command> [args]
+# Needs the ATX app (com.github.uiautomator) running its JSON-RPC server:
+#   pm install -r /data/local/tmp/app-uiautomator.apk
+#   pm install -r /data/local/tmp/app-uiautomator-test.apk
+#   am instrument -w -e debug false -e class com.github.uiautomator.stub.Stub \
+#       com.github.uiautomator.test/androidx.test.runner.AndroidJUnitRunner
+# (supervise.sh keeps that server alive)
 #
-# Every separate adb call costs a full round trip, and a UI step usually needs
-# dump + search + tap + dump again. These commands do all of that on the device
-# and return one short answer: "text<TAB>x,y<TAB>clickable", one line per node.
+# Use: adb shell sh /sdcard/phone/phone.sh <command> [args]
 #
-# The device must be unlocked: a locked screen dumps an empty hierarchy.
-#
-#   dump [limit]              compact screen dump (default 80 lines)
-#   tap <text> [limit]        find text, tap it, return the new screen
-#   tapxy <x> <y>             tap exact coordinates
-#   swipe <x1> <y1> <x2> <y2> [ms]
-#   type <text>               type into the focused field
-#   key back|home|recents|enter|wake
-#   open <package>            launch an app
+#   dump [limit]        compact screen dump: text<TAB>x,y<TAB>clickable
+#   tap <text> [limit]  find text, tap it, return the new screen
+#   tapby <text>        server-side click by text (no dump, ~0.7s)
+#   tapxy <x> <y>
+#   swipe <x1> <y1> <x2> <y2> [steps]
+#   type <text>         set text of the first EditText
+#   key back|home|recent|enter|power
+#   open <package>
 #   wait <ms>
-#   shot [path]               full screenshot (default /sdcard/phone/shot.png)
-#   win                       current focused window
+#   shot [path]         screenshot as PNG on the device
+#   win                 current package
+#   ping                is the server alive
 set -u
 
 DUMP_DIR=/sdcard/phone
 DUMP=$DUMP_DIR/window.xml
+RPC=http://127.0.0.1:9008/jsonrpc/0
 mkdir -p "$DUMP_DIR" 2>/dev/null
 
+rpc() {
+    # $1 = JSON params array, $2 = method
+    printf '{"jsonrpc":"2.0","method":"%s","id":1,"params":%s}' "$2" "$1" | \
+        curl -s -m 20 -X POST -H 'Content-Type: application/json' -d @- "$RPC"
+}
+
 dump_xml() {
-    uiautomator dump "$DUMP" >/dev/null 2>&1 || return 1
-    [ -s "$DUMP" ] || return 1
-    return 0
+    rpc '[true]' dumpWindowHierarchy | \
+        sed -n 's/^.*"result":"//; s/"}$//p' | \
+        sed 's/\\[rn]/\n/g; s/\\"/"/g' > "$DUMP"
+    [ -s "$DUMP" ]
 }
 
 compact() {
-    tr "\n" " " < "$DUMP" | sed "s/<node /\n<node /g" | awk '
+    tr "\n" " " < "$DUMP" | sed 's/<node /\n<node /g' | awk '
     {
         line = $0
         text = ""
@@ -69,45 +79,37 @@ cmd="${1:-}"
 
 case "$cmd" in
     dump)
-        limit="${1:-80}"
         dump_xml || { echo "dump gagal"; exit 1; }
-        compact | head -n "$limit"
+        compact | head -n "${1:-80}"
         ;;
     tap)
         want="${1:-}"
-        limit="${2:-40}"
         [ -n "$want" ] || { echo "pemakaian: tap <text> [limit]"; exit 2; }
         dump_xml || { echo "dump gagal"; exit 1; }
         xy=$(find_xy "$want")
         if [ -z "$xy" ]; then
             echo "tidak ketemu: $want"
-            compact | head -n 30
+            compact | head -n 20
             exit 1
         fi
-        input tap "${xy%,*}" "${xy#*,}"
-        sleep 0.4
-        if dump_xml; then
-            compact | head -n "$limit"
-        fi
+        rpc "[${xy%,*},${xy#*,}]" click >/dev/null
+        sleep 0.3
+        dump_xml && compact | head -n "${2:-40}"
+        ;;
+    tapby)
+        rpc "[{\"text\":\"${1:?text}\"}]" click
         ;;
     tapxy)
-        input tap "${1:?x}" "${2:?y}"
+        rpc "[${1:?x},${2:?y}]" click
         ;;
     swipe)
-        input swipe "${1:?x1}" "${2:?y1}" "${3:?x2}" "${4:?y2}" "${5:-300}"
+        rpc "[${1:?x1},${2:?y1},${3:?x2},${4:?y2},${5:-30}]" swipe
         ;;
     type)
-        input text "$(printf "%s" "${1:-}" | sed "s/ /%s/g")"
+        rpc "[{\"className\":\"android.widget.EditText\"},\"${1:-}\"]" setText >/dev/null
         ;;
     key)
-        case "${1:-}" in
-            back) input keyevent 4 ;;
-            home) input keyevent 3 ;;
-            recents) input keyevent 187 ;;
-            enter) input keyevent 66 ;;
-            wake) input keyevent 224 ;;
-            *) echo "pemakaian: key back|home|recents|enter|wake"; exit 2 ;;
-        esac
+        rpc "[\"${1:?back}\"]" pressKey >/dev/null
         ;;
     open)
         monkey -p "${1:?package}" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
@@ -116,14 +118,16 @@ case "$cmd" in
         sleep "$(awk -v ms="${1:-500}" 'BEGIN { printf "%.3f", ms / 1000 }')"
         ;;
     shot)
-        out="${1:-$DUMP_DIR/shot.png}"
-        screencap -p "$out" && echo "$out"
+        rpc "[\"${1:-$DUMP_DIR/shot.png}\",1.0,50]" takeScreenshot
         ;;
     win)
-        dumpsys window 2>/dev/null | grep -E "mCurrentFocus|mFocusedApp" | head -n 2
+        rpc '[]' deviceInfo | sed -n 's/.*"currentPackageName":"\([^"]*\)".*/\1/p'
+        ;;
+    ping)
+        curl -s -m 5 "http://127.0.0.1:9008/ping"
         ;;
     *)
-        echo "phone.sh: dump|tap|tapxy|swipe|type|key|open|wait|shot|win"
+        echo "phone.sh: dump|tap|tapby|tapxy|swipe|type|key|open|wait|shot|win|ping"
         exit 2
         ;;
 esac

@@ -35,21 +35,40 @@ far smaller than `uiautomator`'s XML and already carries tap coordinates.
 The device still needs ~0.3–0.8s for `uiautomator dump`; this script only removes
 the network cost, which is the part the VPS cannot avoid.
 
+## Setup (ATX app + supervisor)
+
+`phone.sh` talks to the ATX app's JSON-RPC server on `127.0.0.1:9008`, which is
+what makes it fast. Install once (MIUI needs *Developer options → Install via
+USB* enabled, otherwise `pm install` fails with `INSTALL_FAILED_USER_RESTRICTED`):
+
+```bash
+adb shell 'cd /sdcard && curl -sL -O https://github.com/openatx/android-uiautomator-server/releases/download/2.4.0/app-uiautomator.apk && curl -sL -O https://github.com/openatx/android-uiautomator-server/releases/download/2.4.0/app-uiautomator-test.apk'
+adb shell 'cp /sdcard/app-uiautomator*.apk /data/local/tmp/ && pm install -r -t /data/local/tmp/app-uiautomator.apk && pm install -r -t /data/local/tmp/app-uiautomator-test.apk'
+```
+
+Then copy `phone.sh` and `supervise.sh` to `/sdcard/phone/`, start the server and
+the supervisor:
+
+```bash
+adb shell 'nohup setsid sh /sdcard/phone/supervise.sh >/dev/null 2>&1 &'
+adb shell sh /sdcard/phone/phone.sh ping   # pong
+```
+
+`supervise.sh` re-starts the instrumentation whenever `/ping` stops answering, so
+the server survives crashes. After a phone reboot, start `supervise.sh` once.
+
 ## Measured on the POCO X5 Pro
 
 | Step | Cost |
 |---|---|
 | Network round trip (VPS ↔ phone over Tailscale/hotspot) | ~93 ms average |
-| `uiautomator dump` on the device | **~2.1 s** (a fresh JVM each time) |
-| `phone.sh dump` end to end | network + one dump |
-| `phone.sh tap "<teks>"` end to end | network + two dumps + tap |
-
-The surprise is the second row: after the round trips are gone, the cost that
-dominates is `uiautomator`, not the link. Anything that wants sub-200 ms UI
-reads needs a persistent automation daemon (`uiautomator2`'s ATX app, Appium), not
-more shell batching.
+| `uiautomator dump` (old path) | **~2.1 s** — a fresh JVM every call |
+| `dumpWindowHierarchy` RPC + compact | **~215–330 ms** |
+| Full `tap "<text>"` (dump + find + click + dump) | **~1.0 s** |
+| `tapby "<text>"` (server-side click only) | **~0.7 s** |
 
 ## Limits
+
 
 - The device must be **unlocked**. A locked screen (keyguard) dumps an empty
   hierarchy, so `dump` and `tap` return nothing until `deviceLocked=0`.
