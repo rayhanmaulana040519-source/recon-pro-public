@@ -57,6 +57,24 @@ adb shell sh /sdcard/phone/phone.sh ping   # pong
 `supervise.sh` re-starts the instrumentation whenever `/ping` stops answering, so
 the server survives crashes. After a phone reboot, start `supervise.sh` once.
 
+## Reading the screen without pixels
+
+`describe` reads the accessibility tree — the same source TalkBack uses — and
+prints the screen as text: role, label, centre coordinates and state
+(`klik`, `mati`, `fokus`, `terpilih`, `bisa-scroll`, `sandi`).
+
+```
+app     : com.mi.android.globallauncher
+layar   : 1080x2400
+keyboard: mInputShown=false
+TextView   Komunikasi   385,191   klik
+ImageView  Buka setelan Laci aplikasi   992,191   klik
+```
+
+That is enough to understand and drive most screens at ~450ms, no image
+involved. Screenshots (`shot`) are only needed for colours, images, games and
+custom-canvas views that expose no usable node.
+
 ## Measured on the POCO X5 Pro
 
 | Step | Cost |

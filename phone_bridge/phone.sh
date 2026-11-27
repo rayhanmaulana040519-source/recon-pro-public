@@ -1,25 +1,23 @@
 #!/system/bin/sh
-# phone.sh - one RPC call instead of many adb round trips.
+# phone.sh - read the phone screen as text (accessibility tree, no screenshots).
 #
-# Needs the ATX app (com.github.uiautomator) running its JSON-RPC server:
-#   pm install -r /data/local/tmp/app-uiautomator.apk
-#   pm install -r /data/local/tmp/app-uiautomator-test.apk
-#   am instrument -w -e debug false -e class com.github.uiautomator.stub.Stub \
-#       com.github.uiautomator.test/androidx.test.runner.AndroidJUnitRunner
-# (supervise.sh keeps that server alive)
+# Needs the ATX app (com.github.uiautomator) running its JSON-RPC server; see
+# README.md for the install and supervise.sh for keeping it alive.
 #
 # Use: adb shell sh /sdcard/phone/phone.sh <command> [args]
 #
-#   dump [limit]        compact screen dump: text<TAB>x,y<TAB>clickable
+#   describe [limit]    app, screen size, keyboard, then every element as
+#                       role | label | x,y | flags  (clickable/disabled/focused/...)
+#   dump [limit]        the same element list without the header
 #   tap <text> [limit]  find text, tap it, return the new screen
-#   tapby <text>        server-side click by text (no dump, ~0.7s)
+#   tapby <text>        server-side click by text (no dump)
 #   tapxy <x> <y>
 #   swipe <x1> <y1> <x2> <y2> [steps]
 #   type <text>         set text of the first EditText
 #   key back|home|recent|enter|power
 #   open <package>
 #   wait <ms>
-#   shot [path]         screenshot as PNG on the device
+#   shot [path]         screenshot, only when pixels are actually needed
 #   win                 current package
 #   ping                is the server alive
 set -u
@@ -42,34 +40,42 @@ dump_xml() {
     [ -s "$DUMP" ]
 }
 
+# role <TAB> label <TAB> x,y <TAB> flags
 compact() {
     tr "\n" " " < "$DUMP" | sed 's/<node /\n<node /g' | awk '
     {
         line = $0
-        text = ""
-        desc = ""
+        text = ""; desc = ""; cls = "View"
         if (match(line, /text="[^"]*"/)) text = substr(line, RSTART + 6, RLENGTH - 7)
         if (text == "" && match(line, /content-desc="[^"]*"/)) desc = substr(line, RSTART + 14, RLENGTH - 15)
+        if (match(line, /class="[^"]*"/)) { cls = substr(line, RSTART + 7, RLENGTH - 8); sub(/.*\./, "", cls) }
         label = (text != "" ? text : desc)
+        if (label == "" && cls ~ /EditText/) label = "(kolom kosong)"
         if (label == "") next
         if (!match(line, /bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"/)) next
         box = substr(line, RSTART + 8, RLENGTH - 9)
         gsub(/[^0-9]+/, " ", box)
         split(box, p, " ")
-        cx = int((p[1] + p[3]) / 2)
-        cy = int((p[2] + p[4]) / 2)
-        click = (line ~ /clickable="true"/) ? "1" : "0"
-        printf "%s\t%d,%d\t%s\n", label, cx, cy, click
+        cx = int((p[1] + p[3]) / 2); cy = int((p[2] + p[4]) / 2)
+        flag = ""
+        if (line ~ /clickable="true"/) flag = flag "klik,"
+        if (line ~ /enabled="false"/) flag = flag "mati,"
+        if (line ~ /focused="true"/) flag = flag "fokus,"
+        if (line ~ /checked="true"/) flag = flag "terpilih,"
+        if (line ~ /scrollable="true"/) flag = flag "bisa-scroll,"
+        if (line ~ /password="true"/) flag = flag "sandi,"
+        sub(/,$/, "", flag)
+        printf "%s\t%s\t%d,%d\t%s\n", cls, label, cx, cy, (flag == "" ? "-" : flag)
     }'
 }
 
 find_xy() {
-    compact | awk -v want="$1" '
+    compact | awk -F'\t' -v want="$1" '
     BEGIN { want = tolower(want) }
     {
-        key = tolower($1)
-        if (key == want && !found) { print $2; found = 1; exit }
-        if (best == "" && index(key, want) > 0) best = $2
+        key = tolower($2)
+        if (key == want && !found) { print $3; found = 1; exit }
+        if (best == "" && index(key, want) > 0) best = $3
     }
     END { if (!found && best != "") print best }'
 }
@@ -78,6 +84,19 @@ cmd="${1:-}"
 [ $# -gt 0 ] && shift
 
 case "$cmd" in
+    describe)
+        limit="${1:-60}"
+        info=$(rpc '[]' deviceInfo)
+        pkg=$(printf '%s' "$info" | sed -n 's/.*"currentPackageName":"\([^"]*\)".*/\1/p')
+        w=$(printf '%s' "$info" | sed -n 's/.*"displayWidth":\([0-9]*\).*/\1/p')
+        h=$(printf '%s' "$info" | sed -n 's/.*"displayHeight":\([0-9]*\).*/\1/p')
+        echo "app     : ${pkg:-?}"
+        echo "layar   : ${w:-?}x${h:-?}"
+        echo "keyboard: $(dumpsys input_method 2>/dev/null | grep -o 'mInputShown=[a-z]*' | head -1)"
+        dump_xml || { echo "dump gagal"; exit 1; }
+        echo "--- elemen (role | teks | koordinat | status) ---"
+        compact | head -n "$limit"
+        ;;
     dump)
         dump_xml || { echo "dump gagal"; exit 1; }
         compact | head -n "${1:-80}"
@@ -127,7 +146,7 @@ case "$cmd" in
         curl -s -m 5 "http://127.0.0.1:9008/ping"
         ;;
     *)
-        echo "phone.sh: dump|tap|tapby|tapxy|swipe|type|key|open|wait|shot|win|ping"
+        echo "phone.sh: describe|dump|tap|tapby|tapxy|swipe|type|key|open|wait|shot|win|ping"
         exit 2
         ;;
 esac
