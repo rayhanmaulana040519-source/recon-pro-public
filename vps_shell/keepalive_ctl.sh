@@ -21,6 +21,30 @@ BIN_FILE="${STATE_DIR}/adb-keepalive.sh"
 PID_FILE="${STATE_DIR}/adb-keepalive.pid"
 LOG_FILE="${STATE_DIR}/adb-keepalive.log"
 UNIT_FILE=/etc/systemd/system/adb-keepalive.service
+CRON_MARK=recon-adb-keepalive
+
+# A cron line is how a sandboxed caller gets one unsandboxed run: cron starts it
+# as plain root, which can then write the persistent unit into /etc.
+ensure_cron() {
+    command -v crontab >/dev/null 2>&1 || return 0
+    current=$(crontab -l 2>/dev/null || true)
+    if grep -qF "$CRON_MARK" <<<"$current"; then
+        return 0
+    fi
+    {
+        [[ -n "$current" ]] && printf '%s\n' "$current"
+        printf '* * * * * /bin/bash %s/keepalive_ctl.sh >/dev/null 2>&1 # %s\n' "$SCRIPT_DIR" "$CRON_MARK"
+    } | crontab - || return 0
+    printf 'adb-keepalive: cron dipasang supaya unit persisten dibuat pada menit berikutnya\n'
+}
+
+remove_cron() {
+    command -v crontab >/dev/null 2>&1 || return 0
+    current=$(crontab -l 2>/dev/null || true)
+    grep -qF "$CRON_MARK" <<<"$current" || return 0
+    printf '%s\n' "$current" | grep -vF "$CRON_MARK" | crontab - || true
+    printf 'adb-keepalive: entri cron dihapus\n'
+}
 
 force=0
 case "${1:-}" in
@@ -49,6 +73,7 @@ case "${1:-}" in
             printf 'Jalankan sebagai root: sudo bash %s --uninstall\n' "${BASH_SOURCE[0]}" >&2
             exit 1
         fi
+        remove_cron
         systemctl disable --now adb-keepalive.service >/dev/null 2>&1 || true
         systemctl stop adb-keepalive.service >/dev/null 2>&1 || true
         systemctl reset-failed adb-keepalive.service >/dev/null 2>&1 || true
@@ -185,14 +210,19 @@ EOF
     chmod 644 "$UNIT_FILE"
     systemctl daemon-reload
     systemctl enable adb-keepalive.service >/dev/null 2>&1 || true
-    systemctl restart adb-keepalive.service
+    if (( force )) || (( changed )) || ! systemctl is-active --quiet adb-keepalive.service; then
+        systemctl restart adb-keepalive.service
+    fi
+    remove_cron
     printf 'adb-keepalive: %s (unit persisten, user %s, target %s)\n' \
         "$(systemctl is-active adb-keepalive.service 2>/dev/null || true)" "$owner" "$serials"
     exit 0
 fi
 
 # 2. The caller is sandboxed (Recon Pro's MCP unit mounts /etc and /usr
-#    read-only). Ask systemd for a transient unit of the same name instead.
+#    read-only). Keep a cron line so the next minute promotes this to a real
+#    unit, then ask systemd for a transient unit so it runs right now.
+ensure_cron
 if command -v systemd-run >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
     if (( force )) || (( changed )) || ! systemctl is-active --quiet adb-keepalive.service; then
         systemctl stop adb-keepalive.service >/dev/null 2>&1 || true
