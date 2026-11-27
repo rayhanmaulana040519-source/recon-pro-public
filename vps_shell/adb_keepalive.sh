@@ -8,13 +8,14 @@
 # Knobs: ADB_KEEPALIVE_SERIALS ("host:port" list), ADB_KEEPALIVE_INTERVAL
 # (seconds between checks while healthy, default 5), ADB_KEEPALIVE_FAST_INTERVAL
 # (while a device is down, default 1), ADB_KEEPALIVE_RESTART_AFTER (failed
-# rounds before the adb server itself is restarted, default 6),
+# rounds before the adb server itself is restarted, default 120 — high on
+# purpose, a restart drops the transport other adb clients are using),
 # ADB_KEEPALIVE_HEARTBEAT (seconds between "still ok" lines, default 300).
 set -uo pipefail
 
 INTERVAL=${ADB_KEEPALIVE_INTERVAL:-5}
 FAST_INTERVAL=${ADB_KEEPALIVE_FAST_INTERVAL:-1}
-RESTART_AFTER=${ADB_KEEPALIVE_RESTART_AFTER:-6}
+RESTART_AFTER=${ADB_KEEPALIVE_RESTART_AFTER:-120}
 HEARTBEAT=${ADB_KEEPALIVE_HEARTBEAT:-300}
 TARGETS=${ADB_KEEPALIVE_SERIALS:-}
 
