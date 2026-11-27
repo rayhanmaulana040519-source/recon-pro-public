@@ -18,6 +18,7 @@ RECON_HOME=${RECON_PRO_HOME:-${HOME:-.}/recon_pro}
 STATE_DIR="${RECON_HOME%/}/state"
 CONFIG_FILE="${STATE_DIR}/recon_pro.conf"
 BIN_FILE="${STATE_DIR}/adb-keepalive.sh"
+SERIALS_FILE="${STATE_DIR}/adb-keepalive.serials"
 PID_FILE="${STATE_DIR}/adb-keepalive.pid"
 LOG_FILE="${STATE_DIR}/adb-keepalive.log"
 UNIT_FILE=/etc/systemd/system/adb-keepalive.service
@@ -155,7 +156,16 @@ if [[ -z "$serials" ]]; then
     serials=$(runuser -u "$owner" -- env HOME="$home" adb devices 2>/dev/null \
         | awk '$2 == "device" && $1 ~ /:[0-9]+$/ {print $1}' | paste -sd' ' - || true)
 fi
+if [[ -z "$serials" && -f "$SERIALS_FILE" ]]; then
+    # The phone may simply be offline right now; keep watching what we knew.
+    serials=$(tr -d '\n' < "$SERIALS_FILE" 2>/dev/null || true)
+fi
+if [[ -z "$serials" ]]; then
+    serials=$(systemctl show -p Environment adb-keepalive.service 2>/dev/null \
+        | tr ' ' '\n' | sed -n 's/^ADB_KEEPALIVE_SERIALS=//p' | head -1 || true)
+fi
 [[ -n "$serials" ]] || skip "tidak ada device adb ip:port yang connected"
+printf '%s\n' "$serials" > "$SERIALS_FILE"
 
 INTERVAL=${ADB_KEEPALIVE_INTERVAL:-5}
 FAST_INTERVAL=${ADB_KEEPALIVE_FAST_INTERVAL:-1}
